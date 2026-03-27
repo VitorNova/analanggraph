@@ -108,6 +108,12 @@ class MessageBuffer:
             if not messages:
                 return
 
+            # Safety cap: se buffer acumulou demais (falhas repetidas), limpar
+            if len(messages) > 20:
+                logger.warning(f"[BUFFER:{phone}] Buffer overflow ({len(messages)} msgs) - limpando")
+                await redis.buffer_clear(phone)
+                messages = messages[-5:]  # Processar só as últimas 5
+
             # Buscar contexto
             context = await redis.get_context(phone) or {}
 
