@@ -32,6 +32,9 @@ from core.prompts import SYSTEM_PROMPT
 MAX_TENTATIVAS = 3
 BACKOFF_DELAYS = [2.0, 4.0, 8.0]  # Exponencial
 TIMEZONE_OFFSET = -4  # UTC-4 (Mato Grosso)
+
+# Filas onde a IA responde (537=IA genérica, 544=billing, 545=manutenção)
+IA_QUEUES = {537, 544, 545}
 FALLBACK_MSG = "Desculpe, ocorreu um erro interno. Por favor, tente novamente em alguns instantes."
 ADMIN_PHONE = os.environ.get("ADMIN_PHONE")
 
@@ -53,12 +56,20 @@ class State(TypedDict):
 def get_model():
     """Instancia Gemini com tools vinculadas."""
     import os
+    from google.ai.generativelanguage_v1beta.types import HarmCategory, SafetySetting
+
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
         google_api_key=os.environ.get("GOOGLE_API_KEY"),
         temperature=0.3,
         max_output_tokens=4096,
         transport="rest",
+        safety_settings={
+            HarmCategory.HARM_CATEGORY_HARASSMENT: SafetySetting.HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: SafetySetting.HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: SafetySetting.HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: SafetySetting.HarmBlockThreshold.BLOCK_NONE,
+        },
     )
     return llm.bind_tools(TOOLS) if TOOLS else llm
 
@@ -189,9 +200,16 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
             if _lead.data:
                 _queue = _lead.data[0].get("current_queue_id")
                 _state = _lead.data[0].get("current_state")
-                if _state == "human" or (_queue and int(_queue) not in (537,)):
-                    logger.info(f"[GRAFO:{phone}] Fail-safe: fila {_queue} (state={_state}) - ignorando")
-                    await redis.pause_set(phone)  # Sincronizar Redis
+                # NULL = lead novo, pode processar
+                # Fila IA (537/544/545) = pode processar
+                # state="human" ou fila humana = ignorar
+                if _state == "human":
+                    logger.info(f"[GRAFO:{phone}] Fail-safe: state=human - ignorando")
+                    await redis.pause_set(phone)
+                    return
+                if _queue is not None and int(_queue) not in IA_QUEUES:
+                    logger.info(f"[GRAFO:{phone}] Fail-safe: fila {_queue} (humana) - ignorando")
+                    await redis.pause_set(phone)
                     return
     except Exception as e:
         logger.warning(f"[GRAFO:{phone}] Fail-safe check falhou: {e}")

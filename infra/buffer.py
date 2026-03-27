@@ -103,8 +103,8 @@ class MessageBuffer:
         self._processing_keys.add(phone)
 
         try:
-            # Ler e limpar atomicamente
-            messages = await redis.buffer_get_and_clear(phone)
+            # Ler mensagens (sem limpar — preserva se falhar)
+            messages = await redis.buffer_get_messages(phone)
             if not messages:
                 return
 
@@ -115,6 +115,13 @@ class MessageBuffer:
 
             # Chamar callback (processar_mensagens do grafo)
             await self._process_callback(phone, messages, context)
+
+            # Sucesso: agora sim limpar o buffer
+            await redis.buffer_clear(phone)
+
+        except Exception as e:
+            # Falha: buffer PRESERVADO para próximo processamento
+            logger.error(f"[BUFFER:{phone}] Erro no callback, buffer PRESERVADO: {e}")
 
         finally:
             self._processing_keys.discard(phone)

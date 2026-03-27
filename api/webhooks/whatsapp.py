@@ -203,7 +203,12 @@ async def webhook_whatsapp(request: Request):
         return await _handle_comando(phone, texto.strip().lower())
 
     # 3. Human takeover (msg do dono → pausar IA)
+    #    Não pausar se a IA está processando (evita race com resposta UAZAPI)
     if msg.get("from_me"):
+        buffer = await get_message_buffer()
+        if phone in buffer._processing_keys:
+            logger.info(f"[WEBHOOK:{phone}] fromMe=true mas IA processando - ignorando pausa")
+            return {"status": "ignored", "reason": "processing"}
         redis = await get_redis_service()
         await redis.pause_set(phone)
         logger.info(f"[WEBHOOK:{phone}] fromMe=true → IA pausada")

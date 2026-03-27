@@ -26,9 +26,11 @@ logger = logging.getLogger(__name__)
 # ── Config Leadbox (Aluga-Ar, tenant 123) ──
 TENANT_ID = 123
 QUEUE_IA = 537
+QUEUE_BILLING = 544
+QUEUE_MANUTENCAO = 545
 
 # Filas onde a IA responde
-IA_QUEUES = {QUEUE_IA}
+IA_QUEUES = {QUEUE_IA, QUEUE_BILLING, QUEUE_MANUTENCAO}
 
 
 async def handle_ticket_closed(phone: str, ticket_id):
