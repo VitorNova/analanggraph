@@ -29,13 +29,17 @@ def _get_supabase():
 
 
 @tool
-def consultar_cliente(cpf: Optional[str] = None, verificar_pagamento: bool = False) -> str:
+def consultar_cliente(
+    cpf: Optional[str] = None,
+    verificar_pagamento: bool = False,
+    phone: Annotated[str, InjectedState("phone")] = "",
+) -> str:
     """Consulta completa do cliente: dados pessoais, cobranças pendentes/atrasadas, contratos.
 
     Use quando o cliente perguntar sobre: pagamento, boleto, pix, fatura, segunda via,
     valor da parcela, parcelas atrasadas, quanto deve, contrato, equipamentos, manutenção.
     Se o cliente NAO recebeu cobrança recente, pergunte o CPF primeiro.
-    Se o cliente veio por disparo de cobrança, use sem CPF (busca pelo telefone).
+    Se o cliente veio por disparo de cobrança, use sem CPF (busca automática pelo telefone).
     Se o cliente afirmar que já pagou, use verificar_pagamento=true.
 
     Args:
@@ -49,6 +53,7 @@ def consultar_cliente(cpf: Optional[str] = None, verificar_pagamento: bool = Fal
     customer_id = None
     customer_data = None
 
+    # 1. Busca por CPF (se fornecido)
     if cpf:
         cpf_limpo = re.sub(r'\D', '', cpf)
         if len(cpf_limpo) not in [11, 14]:
@@ -61,6 +66,27 @@ def consultar_cliente(cpf: Optional[str] = None, verificar_pagamento: bool = Fal
         if result.data:
             customer_data = result.data[0]
             customer_id = customer_data["id"]
+
+    # 2. Fallback: busca por telefone (para leads de disparo)
+    if not customer_id and not cpf and phone:
+        phone_clean = re.sub(r'\D', '', phone)
+        # Tenta variantes: com/sem 55, últimos 8-11 dígitos
+        variantes = [phone_clean]
+        if phone_clean.startswith("55") and len(phone_clean) > 11:
+            variantes.append(phone_clean[2:])  # sem DDI
+        if len(phone_clean) >= 8:
+            variantes.append(phone_clean[-8:])  # últimos 8
+
+        for variante in variantes:
+            result = supabase.table("asaas_clientes").select(
+                "id, name, cpf_cnpj, mobile_phone, email"
+            ).ilike("mobile_phone", f"%{variante}%").is_("deleted_at", "null").limit(1).execute()
+
+            if result.data:
+                customer_data = result.data[0]
+                customer_id = customer_data["id"]
+                logger.info(f"[TOOL] Cliente encontrado por telefone: {variante}")
+                break
 
     if not customer_id:
         if cpf:
