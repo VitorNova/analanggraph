@@ -1,0 +1,55 @@
+[
+  {
+    "nome": "saudacao",
+    "descricao": "Lead diz oi — IA responde sem chamar tool",
+    "mensagens": ["Oi, tudo bem?"],
+    "expect_no_tool": true,
+    "expect_contains": [],
+    "expect_not_contains": ["erro", "error", "exception"]
+  },
+  {
+    "nome": "pede_boleto_sem_cpf",
+    "descricao": "Lead pede boleto sem CPF — IA pede CPF (sem gastar chamada de API)",
+    "mensagens": ["Quero ver meu boleto"],
+    "expect_contains": ["CPF"],
+    "expect_not_contains": ["erro"]
+  },
+  {
+    "nome": "pede_boleto_com_cpf",
+    "descricao": "Lead pede boleto e informa CPF — IA consulta",
+    "mensagens": ["Quero ver meu boleto, meu CPF é 04386487109"],
+    "expect_tool": "consultar_cliente",
+    "expect_contains": [],
+    "expect_not_contains": ["erro", "error"]
+  },
+  {
+    "nome": "pede_transferencia",
+    "descricao": "Lead pede humano — IA transfere sem avisar",
+    "mensagens": ["Quero falar com um atendente humano por favor"],
+    "expect_tool": "transferir_departamento",
+    "expect_contains": [],
+    "expect_not_contains": ["vou transferir", "transferindo"]
+  },
+  {
+    "nome": "afirma_pagou",
+    "descricao": "Lead diz que já pagou — IA pede CPF ou verifica pagamento",
+    "mensagens": ["Já paguei meu boleto ontem"],
+    "expect_contains": [],
+    "expect_not_contains": ["erro"]
+  },
+  {
+    "nome": "pergunta_contrato_com_cpf",
+    "descricao": "Lead pergunta contrato + CPF — IA consulta",
+    "mensagens": ["Quando acaba meu contrato? CPF 04386487109"],
+    "expect_tool": "consultar_cliente",
+    "expect_contains": [],
+    "expect_not_contains": ["erro"]
+  },
+  {
+    "nome": "mensagem_fora_escopo",
+    "descricao": "Lead pergunta algo fora do escopo — IA não inventa",
+    "mensagens": ["Vocês vendem ar condicionado?"],
+    "expect_no_tool": true,
+    "expect_not_contains": ["erro", "error"]
+  }
+]

@@ -1,0 +1,107 @@
+{
+  "timestamp": "2026-03-25T18:26:28.362844",
+  "total": 7,
+  "passed": 7,
+  "failed": 0,
+  "resultados": [
+    {
+      "nome": "saudacao",
+      "passed": true,
+      "errors": [],
+      "tools_called": [],
+      "response": "Tudo bem! Em que posso ajudar?",
+      "duration_ms": 546
+    },
+    {
+      "nome": "pede_boleto_sem_cpf",
+      "passed": true,
+      "errors": [],
+      "tools_called": [],
+      "response": "Para consultar seu boleto, preciso do seu CPF, por favor.",
+      "duration_ms": 464
+    },
+    {
+      "nome": "pede_boleto_com_cpf",
+      "passed": true,
+      "errors": [],
+      "tools_called": [
+        {
+          "name": "consultar_cliente",
+          "args": {
+            "cpf": "04386487109"
+          }
+        }
+      ],
+      "response": "Não encontrei cadastro com esse CPF. Você pode confirmar se digitou corretamente?",
+      "duration_ms": 1879
+    },
+    {
+      "nome": "pede_transferencia",
+      "passed": true,
+      "errors": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 815,
+            "queue_id": 453
+          }
+        },
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 813,
+            "queue_id": 453
+          }
+        },
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 814,
+            "queue_id": 454
+          }
+        }
+      ],
+      "response": "No momento não consigo transferir para um atendente. Por favor, tente novamente mais tarde.",
+      "duration_ms": 4378
+    },
+    {
+      "nome": "afirma_pagou",
+      "passed": true,
+      "errors": [],
+      "tools_called": [
+        {
+          "name": "consultar_cliente",
+          "args": {
+            "verificar_pagamento": true
+          }
+        }
+      ],
+      "response": "Para localizar seu cadastro, por favor informe seu CPF ou CNPJ.",
+      "duration_ms": 1059
+    },
+    {
+      "nome": "pergunta_contrato_com_cpf",
+      "passed": true,
+      "errors": [],
+      "tools_called": [
+        {
+          "name": "consultar_cliente",
+          "args": {
+            "cpf": "04386487109"
+          }
+        }
+      ],
+      "response": "Não encontrei cadastro com esse CPF. Você pode confirmar se digitou corretamente?",
+      "duration_ms": 1624
+    },
+    {
+      "nome": "mensagem_fora_escopo",
+      "passed": true,
+      "errors": [],
+      "tools_called": [],
+      "response": "Eu sou assistente virtual da Aluga-Ar, focada em aluguel de ar condicionado. Se precisar de ajuda com isso, posso te auxiliar. Caso queira comprar, posso te transferir para o atendimento, ok?",
+      "duration_ms": 760
+    }
+  ]
+}

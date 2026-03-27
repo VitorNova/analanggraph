@@ -1,0 +1,34 @@
+version: "3.7"
+
+services:
+  ana-router:
+    image: traefik/whoami:latest
+    networks:
+      - network_public
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - traefik.enable=true
+
+        # HTTP
+        - traefik.http.routers.ana-http.rule=Host(`ana.fazinzz.com`)
+        - traefik.http.routers.ana-http.entrypoints=web
+        - traefik.http.routers.ana-http.service=ana-backend
+
+        # HTTPS
+        - traefik.http.routers.ana.rule=Host(`ana.fazinzz.com`)
+        - traefik.http.routers.ana.entrypoints=websecure
+        - traefik.http.routers.ana.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.ana.service=ana-backend
+
+        # Backend (porta 3202)
+        - traefik.http.services.ana-backend.loadbalancer.server.url=http://172.17.0.1:3202
+
+networks:
+  network_public:
+    external: true
+    name: network_public

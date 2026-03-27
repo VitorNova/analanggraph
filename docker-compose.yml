@@ -1,0 +1,7 @@
+services:
+  agente:
+    build: .
+    container_name: agente-ia
+    ports: ["3200:3200"]
+    env_file: .env
+    restart: unless-stopped
