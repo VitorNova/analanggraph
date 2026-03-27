@@ -32,19 +32,21 @@ def _get_supabase():
 def consultar_cliente(
     cpf: Optional[str] = None,
     verificar_pagamento: bool = False,
+    buscar_por_telefone: bool = False,
     phone: Annotated[str, InjectedState("phone")] = "",
 ) -> str:
     """Consulta completa do cliente: dados pessoais, cobranças pendentes/atrasadas, contratos.
 
     Use quando o cliente perguntar sobre: pagamento, boleto, pix, fatura, segunda via,
     valor da parcela, parcelas atrasadas, quanto deve, contrato, equipamentos, manutenção.
-    Se o cliente NAO recebeu cobrança recente, pergunte o CPF primeiro.
-    Se o cliente veio por disparo de cobrança, use sem CPF (busca automática pelo telefone).
+    Se o cliente NAO veio por disparo de cobrança, pergunte o CPF primeiro.
+    Se o cliente veio por disparo de cobrança/manutenção, use buscar_por_telefone=true (sem CPF).
     Se o cliente afirmar que já pagou, use verificar_pagamento=true.
 
     Args:
         cpf: CPF ou CNPJ (apenas números). Opcional se cliente veio por disparo.
         verificar_pagamento: Se true, busca faturas pagas recentemente.
+        buscar_por_telefone: Se true, busca pelo telefone do lead. Use APENAS quando o cliente veio por disparo de cobrança ou manutenção.
     """
     supabase = _get_supabase()
     if not supabase:
@@ -67,8 +69,8 @@ def consultar_cliente(
             customer_data = result.data[0]
             customer_id = customer_data["id"]
 
-    # 2. Fallback: busca por telefone (para leads de disparo)
-    if not customer_id and not cpf and phone:
+    # 2. Busca por telefone (apenas quando explicitamente solicitado — leads de disparo)
+    if not customer_id and not cpf and buscar_por_telefone and phone:
         phone_clean = re.sub(r'\D', '', phone)
         # Tenta variantes: com/sem 55, últimos 8-11 dígitos
         variantes = [phone_clean]

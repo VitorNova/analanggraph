@@ -98,11 +98,11 @@ O cliente recebeu disparo automático de cobrança (ref: {reference_id or 'N/A'}
 Ele está respondendo sobre PAGAMENTO.
 
 REGRAS PARA ESTE CONTEXTO:
-- NÃO peça CPF — busque pelo telefone (já sabemos quem é)
-- Se disser que já pagou → use verificar_pagamento=true
-- O link de pagamento já foi enviado na mensagem anterior
+- NÃO peça CPF — use consultar_cliente com buscar_por_telefone=true
+- Se disser que já pagou → use consultar_cliente com verificar_pagamento=true e buscar_por_telefone=true
+- O link de pagamento já foi enviado na mensagem anterior do histórico — se pedir Pix/link, reenvie o link REAL que aparece lá
 - Se quiser negociar → transfira para financeiro
-- Se tiver dúvida sobre valor → use consultar_cliente
+- Se tiver dúvida sobre valor → use consultar_cliente com buscar_por_telefone=true
 """
 
     if context_type == "manutencao":
@@ -111,7 +111,7 @@ O cliente recebeu aviso de manutenção preventiva (contrato: {reference_id or '
 Ele está respondendo sobre AGENDAMENTO DE MANUTENÇÃO.
 
 REGRAS PARA ESTE CONTEXTO:
-- NÃO peça CPF — já sabemos quem é
+- NÃO peça CPF — se precisar consultar, use consultar_cliente com buscar_por_telefone=true
 - Pergunte dia e horário de preferência para a visita técnica
 - Se quiser reagendar → pergunte novo dia/horário
 - Se quiser cancelar → transfira para atendimento
