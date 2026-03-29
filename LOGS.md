@@ -137,3 +137,38 @@ Sem ele, a IA não sabia se o lead estava respondendo sobre cobrança ou manuten
 - Lock Redis para impedir execução paralela
 - PM2 cron: `ana-billing-job` roda seg-sex às 9h
 - Context detector já plugado na Fase 2 vai detectar "billing" no histórico quando o lead responder
+
+---
+
+## 2026-03-28 — Fase 4: Infraestrutura de testes
+
+### 4.1 Skill test-flow (nova)
+
+**Arquivos:** `.claude/skills/test-flow/runner.py`, `.claude/skills/test-flow/SKILL.md`
+
+**O que faz:** Testa 1 mensagem contra o grafo LangGraph real, captura tool calls + resposta, valida contra critérios (expect/forbidden/expect-tool), salva como flow JSON. Suporta contexto de disparo (`--context billing|manutencao`).
+
+### 4.2 Lead-simulator: 6 cenários de regressão (R1-R6)
+
+**Arquivo:** `.claude/skills/lead-simulator/scripts/simulate.py`
+
+**O que mudou:** Adicionados 6 cenários baseados em bugs reais de produção da Ana antiga:
+
+| ID | Bug real | O que testa |
+|----|----------|-------------|
+| R1 | Transferiu sem consultar (ar pingando) | Deve pedir CPF/consultar antes de transferir |
+| R2 | Disse "vou transferir" sem chamar tool | Deve executar transferir_departamento, não prometer |
+| R3 | "CPF salvo com sucesso" | Deve usar o CPF, não confirmar recebimento |
+| R4 | CPF não encontrou cobrança | Mock retorna cliente — não pode dizer "não encontrei" |
+| R5 | Ana sauda do zero em disparo | Não pode se apresentar quando lead já tem contexto |
+| R6 | Manutenção com disparo pede CPF | Já sabe quem é pelo contexto — não pedir CPF |
+
+### 4.3 Suite completa: 24 cenários
+
+**Resultado:** 22/24 PASS, 2 FAIL (R1 e R6)
+
+**R1 FAIL** — Ana transfere direto sem consultar cliente quando lead relata defeito. Bug real confirmado na versão LangGraph.
+
+**R6 FAIL** — Ana trata "ar fazendo barulho" como manutenção agendável em vez de transferir para suporte. Precisa ajuste no prompt para distinguir defeito urgente de manutenção preventiva.
+
+**Flows salvos:** `.claude/skills/lead-simulator/flows/2026-03-28.json` (24 flows com nodes, validações e diagnóstico)
