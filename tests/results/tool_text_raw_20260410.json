@@ -1,0 +1,546 @@
+{
+  "timestamp": "2026-04-10T14:54:18.101404+00:00",
+  "total": 8,
+  "passed": 6,
+  "failed": 2,
+  "results": [
+    {
+      "scenario_id": "TT1",
+      "scenario_name": "Tool-as-text — limpeza de ar → transfere (não escreve tool como texto)",
+      "mensagem": "Tenho um ar condicionado em casa preciso fazer uma limpeza ar de 12 mil btus inverter",
+      "context_type": "",
+      "tool_calls": [],
+      "resposta": "Entendi! Para agendar a limpeza do seu ar-condicionado, preciso transferir você para o Atendimento/Nathália, ok?",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "Entendi! Para agendar a limpeza do seu ar-condicionado, preciso transferir você para o Atendimento/Nathália, ok?",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Nenhuma tool chamada (permitidas: ['transferir_departamento'])",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'consultar_cliente'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'registrar_compromisso'",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": true,
+      "duration_ms": 1966,
+      "error": ""
+    },
+    {
+      "scenario_id": "TT2",
+      "scenario_name": "Tool-as-text — ar pingando → transfere (não escreve tool como texto)",
+      "mensagem": "Meu ar tá pingando água, o que faço?",
+      "context_type": "",
+      "tool_calls": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "queue_id": 453,
+            "user_id": 815
+          }
+        }
+      ],
+      "resposta": "",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "transferir_departamento",
+              "args": {
+                "queue_id": 453,
+                "user_id": 815
+              }
+            }
+          ],
+          "finish_reason": "STOP"
+        },
+        {
+          "type": "tool",
+          "name": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        },
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Nenhuma tool chamada (permitidas: ['transferir_departamento'])",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'consultar_cliente'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'registrar_compromisso'",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": true,
+      "duration_ms": 1486,
+      "error": ""
+    },
+    {
+      "scenario_id": "TT3",
+      "scenario_name": "Tool-as-text — cancelar contrato → transfere (não escreve tool como texto)",
+      "mensagem": "Quero cancelar meu contrato",
+      "context_type": "",
+      "tool_calls": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "queue_id": 453,
+            "user_id": 815
+          }
+        }
+      ],
+      "resposta": "",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "transferir_departamento",
+              "args": {
+                "queue_id": 453,
+                "user_id": 815
+              }
+            }
+          ],
+          "finish_reason": "STOP"
+        },
+        {
+          "type": "tool",
+          "name": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        },
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Nenhuma tool chamada (permitidas: ['transferir_departamento'])",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'consultar_cliente'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'registrar_compromisso'",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": true,
+      "duration_ms": 1310,
+      "error": ""
+    },
+    {
+      "scenario_id": "TT4",
+      "scenario_name": "Tool-as-text — já paguei → transfere financeiro (não escreve tool como texto)",
+      "mensagem": "Já paguei o boleto",
+      "context_type": "",
+      "tool_calls": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "queue_id": 454,
+            "user_id": 814
+          }
+        }
+      ],
+      "resposta": "",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "transferir_departamento",
+              "args": {
+                "queue_id": 454,
+                "user_id": 814
+              }
+            }
+          ],
+          "finish_reason": "STOP"
+        },
+        {
+          "type": "tool",
+          "name": "transferir_departamento",
+          "content": "Transferido para fila 454 com sucesso"
+        },
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Tool transferir_departamento chamada",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento('",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id='",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id='",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'consultar_cliente('",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'registrar_compromisso('",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": true,
+      "duration_ms": 1310,
+      "error": ""
+    },
+    {
+      "scenario_id": "TT5",
+      "scenario_name": "Tool-as-text — falar com humano → transfere (não escreve tool como texto)",
+      "mensagem": "Quero falar com uma pessoa de verdade",
+      "context_type": "",
+      "tool_calls": [],
+      "resposta": "Vou te transferir para o atendimento, só um momento.",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "Vou te transferir para o atendimento, só um momento.",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Tool transferir_departamento chamada",
+          "passed": false,
+          "detail": "chamadas: []"
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento('",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id='",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id='",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'consultar_cliente('",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'registrar_compromisso('",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": false,
+      "duration_ms": 731,
+      "error": ""
+    },
+    {
+      "scenario_id": "TT6",
+      "scenario_name": "Tool-as-text — cidade fora da área → transfere (não escreve tool como texto)",
+      "mensagem": "Vocês atendem em Cuiabá?",
+      "context_type": "",
+      "tool_calls": [],
+      "resposta": "Não atendemos em Cuiabá. Para dúvidas sobre nossa área de cobertura, vou te transferir para o Atendimento, ok?",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "Não atendemos em Cuiabá. Para dúvidas sobre nossa área de cobertura, vou te transferir para o Atendimento, ok?",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Nenhuma tool chamada (permitidas: ['transferir_departamento'])",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id'",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'não atendemos'",
+          "passed": false,
+          "detail": "mas contém!"
+        },
+        {
+          "name": "Resposta NÃO contém 'não cobrimos'",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": false,
+      "duration_ms": 884,
+      "error": ""
+    },
+    {
+      "scenario_id": "TT7",
+      "scenario_name": "Tool-as-text — billing pagou → transfere (não escreve tool como texto)",
+      "mensagem": "Fiz o pix agora",
+      "context_type": "billing",
+      "tool_calls": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "queue_id": 454,
+            "user_id": 814
+          }
+        }
+      ],
+      "resposta": "Olá, Carlos! Passando para lembrar que sua mensalidade de R$ 189,90 vence em 03/04/2026.\n\nSegue o link para pagamento:\nhttps://sandbox.asaas.com/i/abc123\n\nQualquer dúvida, estou por aqui!",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "Olá, Carlos! Passando para lembrar que sua mensalidade de R$ 189,90 vence em 03/04/2026.\n\nSegue o link para pagamento:\nhttps://sandbox.asaas.com/i/abc123\n\nQualquer dúvida, estou por aqui!",
+          "tool_calls": []
+        },
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "transferir_departamento",
+              "args": {
+                "queue_id": 454,
+                "user_id": 814
+              }
+            }
+          ],
+          "finish_reason": "STOP"
+        },
+        {
+          "type": "tool",
+          "name": "transferir_departamento",
+          "content": "Transferido para fila 454 com sucesso"
+        },
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Tool transferir_departamento chamada",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento('",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id='",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id='",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'consultar_cliente('",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": true,
+      "duration_ms": 1253,
+      "error": ""
+    },
+    {
+      "scenario_id": "TT8",
+      "scenario_name": "Tool-as-text — defeito em contexto manutenção → transfere (não escreve tool como texto)",
+      "mensagem": "O ar parou de funcionar, não liga mais",
+      "context_type": "manutencao",
+      "tool_calls": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "queue_id": 453,
+            "user_id": 815
+          }
+        }
+      ],
+      "resposta": "Olá, Carlos! Está chegando a hora da manutenção preventiva do seu ar-condicionado!\n\n*Equipamento:* Springer 12000 BTUs\n*Endereço:* Rua das Flores, 123\n\nA manutenção é gratuita e está inclusa no seu contrato.\n\nQuer agendar? Me fala um dia e horário de preferência!",
+      "raw_messages": [
+        {
+          "type": "ai",
+          "content": "Olá, Carlos! Está chegando a hora da manutenção preventiva do seu ar-condicionado!\n\n*Equipamento:* Springer 12000 BTUs\n*Endereço:* Rua das Flores, 123\n\nA manutenção é gratuita e está inclusa no seu contrato.\n\nQuer agendar? Me fala um dia e horário de preferência!",
+          "tool_calls": []
+        },
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "transferir_departamento",
+              "args": {
+                "queue_id": 453,
+                "user_id": 815
+              }
+            }
+          ],
+          "finish_reason": "STOP"
+        },
+        {
+          "type": "tool",
+          "name": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        },
+        {
+          "type": "ai",
+          "content": "",
+          "tool_calls": [],
+          "finish_reason": "STOP"
+        }
+      ],
+      "validations": [
+        {
+          "name": "Tool transferir_departamento chamada",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'transferir_departamento('",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'queue_id='",
+          "passed": true,
+          "detail": ""
+        },
+        {
+          "name": "Resposta NÃO contém 'user_id='",
+          "passed": true,
+          "detail": ""
+        }
+      ],
+      "passed": true,
+      "duration_ms": 1410,
+      "error": ""
+    }
+  ]
+}

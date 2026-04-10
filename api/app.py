@@ -42,9 +42,6 @@ app = FastAPI(title="Agente IA WhatsApp", lifespan=lifespan)
 
 
 # ── Routers ──
-from api.webhooks.whatsapp import router as whatsapp_router
-app.include_router(whatsapp_router, prefix="/webhook")
-
 from api.webhooks.leadbox import router as leadbox_router
 app.include_router(leadbox_router, prefix="/webhook")
 
@@ -56,4 +53,19 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    checks = {"api": "ok"}
+    try:
+        from infra.redis import get_redis_service
+        redis = await get_redis_service()
+        await redis.client.ping()
+        checks["redis"] = "ok"
+    except Exception:
+        checks["redis"] = "error"
+    try:
+        from infra.supabase import get_supabase
+        sb = get_supabase()
+        checks["supabase"] = "ok" if sb else "error"
+    except Exception:
+        checks["supabase"] = "error"
+    healthy = all(v == "ok" for v in checks.values())
+    return {"status": "healthy" if healthy else "degraded", **checks}

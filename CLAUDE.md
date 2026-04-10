@@ -172,7 +172,7 @@ LEADBOX_API_URL, LEADBOX_API_UUID, LEADBOX_API_TOKEN  # credenciais da API
 ## Comandos
 
 ```bash
-# Logs
+# Logs PM2 (últimas 50 linhas)
 pm2 logs ana-langgraph --lines 50 --nostream
 
 # Restart
@@ -191,6 +191,86 @@ cd /var/www/ana-langgraph && source .venv/bin/activate
 export $(cat .env | grep -v '^#' | grep '=' | xargs)
 PYTHONPATH=/var/www/ana-langgraph python ~/.claude/skills/lead-simulator/scripts/simulate.py
 ```
+
+---
+
+## Diagnóstico de Produção
+
+Quando pedirem para "olhar logs", "ver se deu erro", ou "verificar o que aconteceu", usar estas 3 camadas:
+
+### Camada 1: Incidentes graves (Supabase — `ana_incidentes`)
+```bash
+# Últimos 20 incidentes
+source .venv/bin/activate && export $(cat .env | grep -v '^#' | grep '=' | xargs)
+python3 -c "
+from infra.supabase import get_supabase
+sb = get_supabase()
+r = sb.table('ana_incidentes').select('*').order('created_at', desc=True).limit(20).execute()
+for i in r.data:
+    print(f\"{i['created_at'][:19]} | {i['tipo']:25} | {i['telefone']:15} | {i.get('detalhe','')[:80]}\")
+"
+
+# Filtrar por telefone específico
+python3 -c "
+from infra.supabase import get_supabase
+sb = get_supabase()
+r = sb.table('ana_incidentes').select('*').eq('telefone','PHONE_AQUI').order('created_at', desc=True).limit(10).execute()
+for i in r.data: print(f\"{i['created_at'][:19]} | {i['tipo']} | {i.get('detalhe','')[:100]}\")
+"
+```
+
+**23 tipos de incidente:** hallucination, gemini_falhou, resposta_vazia, consulta_falhou, transferencia_falhou, envio_falhou, mover_fila_falhou, marker_ia_falhou, buffer_erro, upsert_lead_erro, salvar_msg_erro, historico_busca_erro, historico_erro, retry_esgotado, contexto_falhou, snooze_falhou, billing_erro, manutencao_erro, media_erro, lead_reset_erro, pausa_erro, webhook_erro.
+
+### Camada 2: Eventos operacionais (local — `logs/events.jsonl`)
+```bash
+# Últimos 30 eventos
+tail -30 logs/events.jsonl | python3 -m json.tool
+
+# Filtrar por telefone
+grep "PHONE_AQUI" logs/events.jsonl | tail -20 | python3 -m json.tool
+
+# Contar eventos por tipo
+cat logs/events.jsonl | python3 -c "
+import sys,json,collections
+c=collections.Counter(json.loads(l).get('event','?') for l in sys.stdin)
+for k,v in c.most_common(): print(f'{v:5} {k}')
+"
+```
+
+### Camada 3: Payloads webhook raw (local — `logs/webhook_payloads.jsonl`)
+```bash
+# Últimos webhooks
+tail -20 logs/webhook_payloads.jsonl | python3 -c "
+import sys,json
+for l in sys.stdin:
+    d=json.loads(l); r=d.get('raw',d)
+    m=r.get('message',{}) or {}; t=(m.get('ticket',{}) or {})
+    c=(t.get('contact',{}) or {})
+    print(f\"{d['ts'][:19]} | {r.get('event','?'):20} | {c.get('number','?')[-4:]:4} | fromMe={m.get('fromMe','-')} | sendType={m.get('sendType','-')} | q={t.get('queueId','-')}\")
+"
+
+# Filtrar fromMe de um lead específico
+grep "PHONE_AQUI" logs/webhook_payloads.jsonl | python3 -c "
+import sys,json
+for l in sys.stdin:
+    d=json.loads(l); r=d.get('raw',d); m=r.get('message',{}) or {}
+    if m.get('fromMe'): print(json.dumps({'ts':d['ts'][:19],'sendType':m.get('sendType'),'userId':m.get('userId'),'body':(m.get('body') or '')[:80]},ensure_ascii=False))
+"
+```
+
+### Camada 4: Logs PM2 (efêmero — rotaciona)
+```bash
+# Erros recentes
+pm2 logs ana-langgraph --lines 100 --nostream 2>&1 | grep -i "error\|warning\|falha\|KILL\|PAUSAD"
+
+# Filtrar por lead
+pm2 logs ana-langgraph --lines 200 --nostream 2>&1 | grep "PHONE_AQUI"
+```
+
+### Alertas automáticos (WhatsApp pro admin)
+- **Hallucination:** Ana disse que fez mas não chamou tool → alerta imediato
+- **Gemini falhou:** 3 retries esgotados → alerta imediato
+- Admin phone: variável `ADMIN_PHONE` no .env
 
 ---
 
@@ -227,6 +307,27 @@ PYTHONPATH=/var/www/ana-langgraph python ~/.claude/skills/lead-simulator/scripts
 
 ---
 
+## Pendências
+
+### Migração para gemini-2.5-flash — deadline 1 de junho de 2026
+
+Google desliga `gemini-2.0-flash` em 01/06/2026. Modelo configurável via `GEMINI_MODEL` em `core/grafo.py` (default `gemini-2.0-flash`).
+
+**Regressões conhecidas do 2.5-flash** (testado 2026-04-10, 3 execuções):
+- **R2**: "quero falar com o financeiro" → 2.5 responde com template billing em vez de transferir
+- **R6**: "ar está fazendo barulho" em contexto manutenção → 2.5 responde com template em vez de transferir
+- **X4**: "quero falar com um atendente" → 2.5 não chama tool de transferência
+
+As 3 regressões são do mesmo padrão: o 2.5-flash ignora instrução de transferência imediata e responde com texto. Precisa ajustar prompt antes de migrar.
+
+**Antes de migrar:**
+1. Corrigir prompt para os 3 cenários acima
+2. Rodar suite completa 3x com `GEMINI_MODEL=gemini-2.5-flash` e comparar com baseline 2.0-flash
+3. Baseline de referência: `tests/results/all_20260410.json` (62/76 PASS com 2.0-flash)
+4. Resultados do 2.5-flash: `tests/results/all_25flash_run1.json` (60/76) e `all_25flash_run2.json` (63/76)
+
+---
+
 ## Regras
 
 - Código enxuto — ~28 arquivos Python
@@ -247,6 +348,9 @@ PYTHONPATH=/var/www/ana-langgraph python ~/.claude/skills/lead-simulator/scripts
 2. **`enviar_resposta_leadbox` vive em `infra/leadbox_client.py`** (não em `api/webhooks/leadbox.py`). Importar de `infra.leadbox_client`. O webhook re-importa de lá.
 3. **`billing_job.py` e `manutencao_job.py` importam `enviar_resposta_leadbox` de `infra/leadbox_client.py`.** Jobs enviam mensagens pela mesma função do webhook.
 4. **`_context_extra` em `grafo.py` é um dict global.** Preenchido em `processar_mensagens()`, lido em `call_model()`. Funciona porque cada chamada é por lead (sequencial via lock Redis).
+5. **fromMe: NUNCA usar fila (queueId) para diferenciar IA de humano.** Usar `sendType` do payload: `"API"` = IA, qualquer outro = humano. Marker Redis é camada 1 (TTL 15s). Bug real: check `IA_QUEUES` ignorava humanos nas filas 544/545.
+6. **Todos os 6 pontos que enviam para Leadbox DEVEM gravar marker Redis** (`_mark_sent_by_ia`). Se adicionar novo ponto de envio, chamar `_mark_sent_by_ia(phone)` após POST. Pontos: `enviar_resposta_leadbox`, `transferir_departamento`, fallback, alerta admin, billing, manutenção.
+7. **`MAX_TOOL_ROUNDS` conta só após último HumanMessage** (desta invocação). Não contar histórico antigo — inflaria o counter e encerraria prematuramente.
 
 ---
 
@@ -263,3 +367,6 @@ PYTHONPATH=/var/www/ana-langgraph python ~/.claude/skills/lead-simulator/scripts
 - Ticket fechado: confiar apenas em `event=FinishedTicket` ou `ticket.status=closed`
 - `UpdateOnTicket` com `queue_id=None` **NÃO** significa ticket fechado (é disparo genérico)
 - Token usa query param `?token=JWT`, não header Bearer
+- **fromMe detection (3 camadas):** (1) marker Redis `sent:ia:{agent_id}:{phone}` (TTL 15s) → IA. (2) `message.sendType == "API"` → IA (fallback se marker expirou). (3) Qualquer outro → humano → PAUSAR IA.
+- **sendType valores conhecidos:** `"API"` = enviado pela API (IA), `"chat"` = enviado pelo painel (humano), `None` = ambíguo (tratar como humano)
+- **Payloads capturados:** `logs/webhook_payloads.jsonl` — todos os webhooks raw, antes de qualquer filtro. Manter ativo.

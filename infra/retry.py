@@ -51,4 +51,8 @@ async def invocar_com_retry(graph, payload: dict, phone: str = "", max_tentativa
                 logger.info(f"[GRAFO:{phone}] Retry em {delay}s...")
                 await asyncio.sleep(delay)
 
+    if result is None and last_error is not None:
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(phone, "retry_esgotado", f"{max_tentativas} tentativas: {last_error}"[:300])
+
     return result, last_error

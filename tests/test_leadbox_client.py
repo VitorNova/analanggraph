@@ -87,3 +87,74 @@ def test_token_como_query_param():
         call_args = mock_client.post.call_args
         params = call_args.kwargs.get("params") or call_args[1].get("params")
         assert params == {"token": "test_jwt_token"}
+
+
+def _make_mock_client():
+    """Helper: cria mock httpx.Client com POST bem-sucedido."""
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_client = MagicMock()
+    mock_client.post = MagicMock(return_value=mock_resp)
+    return mock_client
+
+
+def _get_payload(mock_client):
+    """Helper: extrai payload JSON do POST mockado."""
+    return mock_client.post.call_args.kwargs.get("json") or mock_client.post.call_args[1].get("json")
+
+
+def test_payload_com_queue_e_user_id():
+    """Payload com queue_id e user_id deve incluir queueId, userId e forceTicket flags."""
+    mock_client = _make_mock_client()
+
+    with patch("infra.leadbox_client.httpx.Client") as MockClient, \
+         patch("infra.leadbox_client._mark_sent_by_ia"), \
+         patch("infra.leadbox_client.LEADBOX_API_TOKEN", "fake_token"):
+        MockClient.return_value.__enter__ = MagicMock(return_value=mock_client)
+        MockClient.return_value.__exit__ = MagicMock(return_value=False)
+
+        enviar_resposta_leadbox("5565999990000", "Oi", queue_id=537, user_id=1095)
+
+    payload = _get_payload(mock_client)
+    assert payload["queueId"] == 537
+    assert payload["userId"] == 1095
+    assert payload["forceTicketToDepartment"] is True
+    assert payload["forceTicketToUser"] is True
+
+
+def test_payload_sem_queue_e_user_id():
+    """Payload sem params opcionais NÃO deve conter queueId/userId (retrocompat)."""
+    mock_client = _make_mock_client()
+
+    with patch("infra.leadbox_client.httpx.Client") as MockClient, \
+         patch("infra.leadbox_client._mark_sent_by_ia"), \
+         patch("infra.leadbox_client.LEADBOX_API_TOKEN", "fake_token"):
+        MockClient.return_value.__enter__ = MagicMock(return_value=mock_client)
+        MockClient.return_value.__exit__ = MagicMock(return_value=False)
+
+        enviar_resposta_leadbox("5565999990000", "Oi")
+
+    payload = _get_payload(mock_client)
+    assert "queueId" not in payload
+    assert "userId" not in payload
+    assert "forceTicketToDepartment" not in payload
+    assert "forceTicketToUser" not in payload
+
+
+def test_payload_com_queue_sem_user():
+    """Payload com queue_id mas sem user_id deve incluir só queueId."""
+    mock_client = _make_mock_client()
+
+    with patch("infra.leadbox_client.httpx.Client") as MockClient, \
+         patch("infra.leadbox_client._mark_sent_by_ia"), \
+         patch("infra.leadbox_client.LEADBOX_API_TOKEN", "fake_token"):
+        MockClient.return_value.__enter__ = MagicMock(return_value=mock_client)
+        MockClient.return_value.__exit__ = MagicMock(return_value=False)
+
+        enviar_resposta_leadbox("5565999990000", "Oi", queue_id=537)
+
+    payload = _get_payload(mock_client)
+    assert payload["queueId"] == 537
+    assert payload["forceTicketToDepartment"] is True
+    assert "userId" not in payload
+    assert "forceTicketToUser" not in payload

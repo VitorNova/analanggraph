@@ -98,12 +98,12 @@ O cliente recebeu disparo automático de cobrança (ref: {reference_id or 'N/A'}
 Ele está respondendo sobre PAGAMENTO.
 
 REGRAS PARA ESTE CONTEXTO:
-- NÃO peça CPF — use consultar_cliente com buscar_por_telefone=true
-- Se disser que já pagou → use consultar_cliente com verificar_pagamento=true e buscar_por_telefone=true
+- NÃO peça CPF — use a ferramenta de consulta com buscar_por_telefone=true
+- Se disser que já pagou ("já paguei", "fiz o pix", "mandei comprovante") → transfira para Financeiro/Tieli (fila 454, atendente 814) IMEDIATAMENTE. NÃO consulte, NÃO verifique, NÃO peça CPF.
 - O link de pagamento já foi enviado na mensagem anterior do histórico — se pedir Pix/link, reenvie o link REAL que aparece lá
 - Se quiser negociar → transfira para financeiro
-- Se tiver dúvida sobre valor → use consultar_cliente com buscar_por_telefone=true
-- Se prometer pagar em uma data ("vou pagar sexta", "pago amanhã", "essa semana") → use `registrar_compromisso` com a data em YYYY-MM-DD para silenciar cobranças até lá. Converta a fala do lead para data ISO real.
+- Se tiver dúvida sobre valor → use a ferramenta de consulta com buscar_por_telefone=true
+- Se prometer pagar em uma data ("vou pagar sexta", "pago amanhã", "essa semana", "vou pagar depois") → use a ferramenta de registro de compromisso com a data em YYYY-MM-DD. NÃO diga "anotado" ou "registrei" sem usar a ferramenta PRIMEIRO. Converta a fala do lead para data ISO real. Se vago ("essa semana", "depois"), use a próxima sexta-feira.
 """
 
     if context_type == "manutencao":
@@ -113,10 +113,10 @@ Ele está respondendo sobre AGENDAMENTO DE MANUTENÇÃO.
 
 REGRAS PARA ESTE CONTEXTO:
 - NÃO peça CPF — o lead já está identificado
-- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → use `transferir_departamento` para Atendimento/Nathália (queue_id: 453, user_id: 815) IMEDIATAMENTE. NÃO peça CPF, NÃO use consultar_cliente. Apenas transfira. Defeito NÃO é manutenção preventiva.
+- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → transfira para Atendimento/Nathália (fila 453, atendente 815) IMEDIATAMENTE. NÃO peça CPF, NÃO consulte. Apenas transfira. Defeito NÃO é manutenção preventiva.
 - Se NÃO for defeito → pergunte dia e horário de preferência para a visita técnica
 - Se quiser reagendar → pergunte novo dia/horário
-- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok", "não") → use `transferir_departamento` para Atendimento/Nathália (queue_id: 453, user_id: 815) IMEDIATAMENTE, sem insistir. A empresa precisa registrar a recusa.
+- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok", "não") → transfira para Atendimento/Nathália (fila 453, atendente 815) IMEDIATAMENTE, sem insistir. A empresa precisa registrar a recusa.
 - Manutenção preventiva é GRATUITA (inclusa no contrato)
 """
 

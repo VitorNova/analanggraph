@@ -1,15 +1,4 @@
-"""
-Template: Supabase client singleton.
-
-Baseado em: /var/www/agente-langgraph/infra/supabase.py (produção)
-
-Uso:
-    Copie para infra/supabase.py
-
-    from infra.supabase import get_supabase
-    supabase = get_supabase()
-    supabase.table("leads").select("*").execute()
-"""
+"""Supabase client singleton."""
 
 import logging
 import os
@@ -44,22 +33,6 @@ def get_supabase() -> Optional[Client]:
         logger.info("[SUPABASE] Conectado")
         return _supabase_client
     except Exception as e:
-        logger.error(f"[SUPABASE] Erro: {e}")
+        logger.error(f"[SUPABASE] Erro: {e}", exc_info=True)
         return None
 
-
-def get_supabase_or_raise() -> Client:
-    """Retorna client ou levanta ValueError."""
-    client = get_supabase()
-    if client is None:
-        raise ValueError("Supabase não configurado. Verifique SUPABASE_URL e SUPABASE_KEY.")
-    return client
-
-
-def get_uazapi_config() -> dict:
-    """Retorna config da UAZAPI do .env."""
-    return {
-        "url": os.environ.get("UAZAPI_URL", "").rstrip("/"),
-        "token": os.environ.get("UAZAPI_TOKEN", ""),
-        "instance": os.environ.get("UAZAPI_INSTANCE", ""),
-    }

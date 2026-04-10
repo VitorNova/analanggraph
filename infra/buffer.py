@@ -85,7 +85,7 @@ class MessageBuffer:
         except asyncio.CancelledError:
             logger.debug(f"[BUFFER:{phone}] Timer cancelado (nova msg chegou)")
         except Exception as e:
-            logger.error(f"[BUFFER:{phone}] Erro: {e}")
+            logger.error(f"[BUFFER:{phone}] Erro: {e}", exc_info=True)
 
     async def _process_buffered_messages(self, phone: str):
         """Processa mensagens acumuladas."""
@@ -127,7 +127,9 @@ class MessageBuffer:
 
         except Exception as e:
             # Falha: buffer PRESERVADO para próximo processamento
-            logger.error(f"[BUFFER:{phone}] Erro no callback, buffer PRESERVADO: {e}")
+            logger.error(f"[BUFFER:{phone}] Erro no callback, buffer PRESERVADO: {e}", exc_info=True)
+            from infra.incidentes import registrar_incidente
+            registrar_incidente(phone, "buffer_erro", str(e)[:300])
 
         finally:
             self._processing_keys.discard(phone)

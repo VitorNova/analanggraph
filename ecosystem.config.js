@@ -13,20 +13,6 @@ module.exports = {
       max_restarts: 5,
       restart_delay: 3000,
     },
-    // Job: Marcar leads abandonados à meia-noite
-    {
-      name: "ana-pipeline-perdidos",
-      script: "/var/www/ana-langgraph/.venv/bin/python",
-      args: "jobs/rotinas.py perdidos",
-      cwd: "/var/www/ana-langgraph",
-      interpreter: "none",
-      cron_restart: "0 0 * * *",
-      autorestart: false,
-      watch: false,
-      env: {
-        PYTHONPATH: "/var/www/ana-langgraph",
-      },
-    },
     // Job: Manutenção preventiva D-7 às 9h
     {
       name: "ana-manutencao-job",

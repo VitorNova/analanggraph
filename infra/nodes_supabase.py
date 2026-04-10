@@ -1,30 +1,21 @@
-"""
-Template: Persistência — salvar/buscar histórico + enviar via UAZAPI.
-
-Baseado em: /var/www/agente-langgraph/api/webhooks/persistencia.py (produção)
+"""Persistência — salvar/buscar histórico no Supabase.
 
 Funções:
 - upsert_lead: criar ou atualizar lead
 - salvar_mensagem: salvar no conversation_history
 - buscar_historico: buscar últimas N msgs como LangChain messages
-- enviar_resposta: enviar via UAZAPI com split inteligente
-
-Uso:
-    Copie e ajuste os imports do Supabase e UAZAPI.
+- salvar_mensagens_agente: salvar respostas do agente
 """
 
 import logging
-import os
-import re
-import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
-import httpx
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage, ToolMessage
 
 logger = logging.getLogger(__name__)
 
+from core.constants import TABLE_LEADS
 from infra.supabase import get_supabase
 
 
@@ -37,7 +28,7 @@ def upsert_lead(telefone: str, nome: str = None) -> Optional[str]:
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        existing = supabase.table("ana_leads") \
+        existing = supabase.table(TABLE_LEADS) \
             .select("id").eq("telefone", telefone).execute()
 
         if existing.data:
@@ -45,10 +36,10 @@ def upsert_lead(telefone: str, nome: str = None) -> Optional[str]:
             update = {"last_interaction_at": now, "updated_at": now}
             if nome:
                 update["nome"] = nome
-            supabase.table("ana_leads").update(update).eq("id", lead_id).execute()
+            supabase.table(TABLE_LEADS).update(update).eq("id", lead_id).execute()
             return lead_id
         else:
-            result = supabase.table("ana_leads").insert({
+            result = supabase.table(TABLE_LEADS).insert({
                 "telefone": telefone,
                 "nome": nome or f"Lead {telefone}",
                 "current_state": "ai",
@@ -59,7 +50,9 @@ def upsert_lead(telefone: str, nome: str = None) -> Optional[str]:
             }).execute()
             return result.data[0]["id"] if result.data else None
     except Exception as e:
-        logger.error(f"[PERSISTENCIA] Erro upsert_lead: {e}")
+        logger.error(f"[PERSISTENCIA] Erro upsert_lead: {e}", exc_info=True)
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(telefone, "upsert_lead_erro", str(e)[:300])
         return None
 
 
@@ -73,7 +66,7 @@ def salvar_mensagem(telefone: str, content: str, direction: str, lead_id: str = 
     now = datetime.now(timezone.utc).isoformat()
 
     try:
-        existing = supabase.table("ana_leads") \
+        existing = supabase.table(TABLE_LEADS) \
             .select("id, conversation_history") \
             .eq("telefone", telefone).limit(1).execute()
 
@@ -84,11 +77,13 @@ def salvar_mensagem(telefone: str, content: str, direction: str, lead_id: str = 
         history = existing.data[0].get("conversation_history") or {"messages": []}
         history["messages"].append(new_msg)
 
-        supabase.table("ana_leads") \
+        supabase.table(TABLE_LEADS) \
             .update({"conversation_history": history, "updated_at": now}) \
             .eq("id", existing.data[0]["id"]).execute()
     except Exception as e:
-        logger.error(f"[PERSISTENCIA] Erro salvar_mensagem: {e}")
+        logger.error(f"[PERSISTENCIA] Erro salvar_mensagem: {e}", exc_info=True)
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(telefone, "salvar_msg_erro", str(e)[:300])
 
 
 def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
@@ -102,7 +97,7 @@ def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
         return []
 
     try:
-        result = supabase.table("ana_leads") \
+        result = supabase.table(TABLE_LEADS) \
             .select("conversation_history") \
             .eq("telefone", telefone).limit(1).execute()
 
@@ -123,6 +118,11 @@ def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
                 if tool_calls:
                     lang_msgs.append(AIMessage(content=content, tool_calls=tool_calls))
                 else:
+                    # Sanitizar tool-as-text: Gemini 2.0 Flash às vezes escreve
+                    # nome de tool como texto no content em vez de usar function calling.
+                    # Se o histórico tem isso, limpar para não contaminar futuras respostas.
+                    if "transferir_departamento(" in content or "consultar_cliente(" in content or "registrar_compromisso(" in content:
+                        content = ""
                     lang_msgs.append(AIMessage(content=content))
             elif role == "tool":
                 lang_msgs.append(ToolMessage(
@@ -181,7 +181,9 @@ def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
 
         return validated
     except Exception as e:
-        logger.error(f"[PERSISTENCIA] Erro buscar_historico: {e}")
+        logger.error(f"[PERSISTENCIA] Erro buscar_historico: {e}", exc_info=True)
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(telefone, "historico_busca_erro", str(e)[:300])
         return []
 
 
@@ -200,7 +202,7 @@ def salvar_mensagens_agente(telefone: str, mensagens: List[BaseMessage], usage: 
     try:
         now = datetime.now(timezone.utc).isoformat()
 
-        result = supabase.table("ana_leads") \
+        result = supabase.table(TABLE_LEADS) \
             .select("id, conversation_history") \
             .eq("telefone", telefone).limit(1).execute()
 
@@ -247,7 +249,7 @@ def salvar_mensagens_agente(telefone: str, mensagens: List[BaseMessage], usage: 
                     "timestamp": now,
                 })
 
-        supabase.table("ana_leads").update({
+        supabase.table(TABLE_LEADS).update({
             "conversation_history": history,
             "updated_at": now,
             "last_interaction_at": now,
@@ -256,77 +258,8 @@ def salvar_mensagens_agente(telefone: str, mensagens: List[BaseMessage], usage: 
         logger.info(f"[PERSISTENCIA:{telefone}] Salvas {len(mensagens)} mensagens do agente")
 
     except Exception as e:
-        logger.error(f"[PERSISTENCIA:{telefone}] Erro salvar_mensagens_agente: {e}")
+        logger.error(f"[PERSISTENCIA:{telefone}] Erro salvar_mensagens_agente: {e}", exc_info=True)
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(telefone, "historico_erro", f"salvar_mensagens_agente: {e}"[:300])
 
 
-def enviar_resposta(telefone: str, mensagem: str, agent_name: str = None) -> bool:
-    """Envia via UAZAPI com split inteligente.
-
-    Args:
-        telefone: Telefone do destinatário.
-        mensagem: Texto da resposta.
-        agent_name: Se informado, prefixa "*{name}:*\\n" no primeiro chunk.
-    """
-    uazapi_url = os.environ.get("UAZAPI_URL", "").rstrip("/")
-    uazapi_token = os.environ.get("UAZAPI_TOKEN", "")
-
-    if not uazapi_url or not uazapi_token:
-        logger.error("[UAZAPI] URL ou TOKEN não configurado")
-        return False
-
-    chunks = _split_message(mensagem, max_chars=200)
-
-    if agent_name and chunks:
-        chunks[0] = f"*{agent_name}:*\n{chunks[0]}"
-
-    for i, chunk in enumerate(chunks):
-        try:
-            # Limpar telefone
-            tel_limpo = "".join(filter(str.isdigit, telefone))
-            if not tel_limpo.startswith("55"):
-                tel_limpo = f"55{tel_limpo}"
-
-            with httpx.Client(timeout=15) as client:
-                resp = client.post(
-                    f"{uazapi_url}/send/text",
-                    headers={"token": uazapi_token, "Content-Type": "application/json"},
-                    json={"number": tel_limpo, "text": chunk, "delay": 0, "linkPreview": i == 0},
-                )
-                resp.raise_for_status()
-
-            if i < len(chunks) - 1:
-                time.sleep(1.5)  # Delay entre chunks
-        except Exception as e:
-            logger.error(f"[UAZAPI] Erro ao enviar chunk {i+1}: {e}")
-            return False
-
-    return True
-
-
-def _split_message(text: str, max_chars: int = 200) -> List[str]:
-    """Split inteligente: parágrafos → frases → palavras → hard limit."""
-    if len(text) <= max_chars:
-        return [text]
-
-    chunks = []
-
-    # Split por parágrafos
-    paragraphs = text.split("\n\n")
-    for para in paragraphs:
-        if len(para) <= max_chars:
-            chunks.append(para)
-        else:
-            # Split por frases
-            sentences = re.split(r'(?<=[.!?])\s+', para)
-            current = ""
-            for sent in sentences:
-                if len(current) + len(sent) + 1 <= max_chars:
-                    current = f"{current} {sent}".strip() if current else sent
-                else:
-                    if current:
-                        chunks.append(current)
-                    current = sent[:max_chars] if len(sent) > max_chars else sent
-            if current:
-                chunks.append(current)
-
-    return chunks if chunks else [text[:max_chars]]

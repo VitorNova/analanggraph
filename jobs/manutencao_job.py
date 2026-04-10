@@ -239,7 +239,8 @@ async def _processar_notificacao(item: dict, redis) -> bool:
 
     tel_envio = clean_phone if clean_phone.startswith("55") else f"55{clean_phone}"
 
-    if not enviar_resposta_leadbox(tel_envio, message, raw=True):
+    from core.constants import QUEUE_MANUTENCAO, USER_IA
+    if not enviar_resposta_leadbox(tel_envio, message, raw=True, queue_id=QUEUE_MANUTENCAO, user_id=USER_IA):
         logger.error(f"[MANUTENCAO:{phone}] Leadbox erro ao enviar")
         await redis.client.set(dedup_key, "1", ex=86400)
         return False

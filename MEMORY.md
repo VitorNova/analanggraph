@@ -2,17 +2,18 @@
 
 > Diário de sessões e decisões. O que aconteceu, por que, e lições aprendidas.
 > Referência técnica (stack, estrutura, comandos) → ver CLAUDE.md.
-> Última atualização: 2026-04-06
+> Última atualização: 2026-04-07
 
 ---
 
 ## Estado Atual
 
-**Status:** EM PRODUÇÃO. 16 cenários lead-simulator (14/16 PASS). 3 bugs de prompt em aberto (ver `project_bugs.md`).
-**Incidentes:** Captura automática em `ana_incidentes` (Supabase) — 15 tipos de falha cobertos.
+**Status:** EM PRODUÇÃO. 29/30 cenários PASS (1 flaky). Bug fromMe (W1) RESOLVIDO.
+**Incidentes:** 22 tipos cobertos (7 adicionados sessão 3).
 **Alertas:** Hallucination e Gemini falhou → WhatsApp pro admin (5566997194084).
 **Health:** `/health` verifica API + Redis + Supabase.
 **Jobs:** billing e manutenção configurados no PM2 (cron seg-sex 9h).
+**Observabilidade:** Payloads webhook salvos raw em `logs/webhook_payloads.jsonl` (manter ativo).
 
 ### Pendências
 1. Aprovar templates de cobrança antes de validar billing_job em produção
@@ -31,7 +32,7 @@
 | Contexto detectado 1x em processar_mensagens | Evita query Supabase por iteração do loop ReAct |
 | Jobs billing/manutenção via PM2 cron | `cron_restart: "0 9 * * 1-5"`, autorestart: false |
 | Snooze só no Supabase na tool, Redis no billing_job | Tools LangGraph são sync, não podem chamar Redis async |
-| Defeito sem contexto → pede CPF + transfere | buscar_por_telefone era flaky no Gemini, CPF é determinístico |
+| Defeito → transfere IMEDIATAMENTE, nunca pede CPF | Versão anterior pedia CPF, Gemini era flaky. Regra simplificada (sessão 3) |
 | Recusa pagar → Lázaro (dono) | Negociar → Financeiro/Tieli, mas recusar pagar precisa do dono |
 | Auto-snooze 48h como fallback | Se Gemini não chamar registrar_compromisso, snooze automático |
 | Ticket fechado: só FinishedTicket ou status=closed | UpdateOnTicket+queue=None gerava 124 falsos positivos/dia |
@@ -40,10 +41,52 @@
 | Hallucination detectada pós-resposta | Compara texto da Ana vs tools chamadas, alerta admin |
 | Tracebacks completos em todo logger.error | `exc_info=True` em 15 pontos — nunca truncar stack |
 | Health check verifica dependências | Redis PING + Supabase client + API = retorna `degraded` se falhar |
+| fromMe: 3 camadas (marker → sendType → humano) | Check IA_QUEUES causava bug W1. sendType=API = IA, resto = humano |
+| Captura raw de webhooks em JSONL | Observabilidade permanente. Debug sem reproduzir |
+| MAX_TOOL_ROUNDS conta só após último HumanMessage | Histórico antigo inflava counter, encerrando prematuramente |
 
 ---
 
 ## Diário de Sessões
+
+### 2026-04-07 — Sessão 3: Análise de prompt + fix fromMe + pontos cegos
+
+#### Feature: Prompt reescrito (17 regras, 6 seções novas)
+- **Contexto:** Análise profunda identificou 16 problemas no prompt. 3 fontes contraditórias sobre "cliente pagou" (regra 14 vs docstring vs context_detector). Faltava proteção contra prompt injection, limite de loops, instrução pós-tool.
+- **O que foi feito:** Prompt reescrito com 17 regras (antes 14), seções "Após Tool", "Cliente que retorna", regra 17 (prioridade contexto). Docstring consultar_cliente e context_detector billing alinhados.
+- **Resultado:** 29/30 cenários PASS (antes 16). Suite expandida para 30 cenários cobrindo prompt injection, preço, cancelamento, defeito, voltagem.
+
+#### Feature: Marker Redis em transferir_departamento
+- **Contexto:** transferir_departamento fazia POST direto no Leadbox sem gravar marker anti-eco. Era o ÚNICO ponto sem marker dos 7.
+- **O que foi feito:** Adicionado `_mark_sent_by_ia(telefone_limpo)` após POST bem-sucedido.
+- **Resultado:** Todos os 7 pontos de envio agora têm marker.
+
+#### Feature: MAX_TOOL_ROUNDS = 5
+- **Contexto:** Grafo podia loopar infinito se Gemini repetisse tool calls.
+- **O que foi feito:** Counter em `route_model_output` que encerra se > 5 tool rounds.
+
+#### Feature: 10 pontos cegos corrigidos (X1-X8)
+- **Contexto:** 44 except blocks no código, mas só 15 tinham registrar_incidente. Falhas de persistência (upsert, salvar msg, buscar histórico) eram silenciosas.
+- **O que foi feito:** Adicionado registrar_incidente em: upsert_lead, salvar_mensagem, buscar_historico, _mark_sent_by_ia, resposta_vazia. Corrigido except engolido em handle_queue_change.
+
+#### Problema RESOLVIDO: fromMe em IA_QUEUES ignorava humanos reais (W1)
+- **Sintoma:** Lead 556697194084 — Tieli responde na fila 544, IA responde por cima.
+- **Causa raiz:** Check `IA_QUEUES` em leadbox.py ignorava TODOS os fromMe em filas 537/544/545, incluindo humanos reais. `transferir_departamento` não gravava marker Redis (único ponto sem marker dos 7).
+- **Investigação:** Capturados 542 webhooks raw em `logs/webhook_payloads.jsonl`. Analisados 52 fromMe. Descoberto que `sendType="API"` = IA, `sendType="chat"` = humano, `sendType=None` = ambíguo (tratar como humano).
+- **Fix:** (1) Marker adicionado em `transferir_departamento`. (2) Check `IA_QUEUES` removido e substituído por 3 camadas: marker Redis → sendType=API → humano. (3) Teste com 52 payloads reais + 4 cenários sintéticos do bug: 100% PASS.
+- **Lição:** Nunca usar fila como proxy para "quem enviou". Usar o campo `sendType` do payload Leadbox + marker Redis.
+
+#### Feature: Captura de payloads webhook (permanente)
+- **O que faz:** Todos os webhooks salvos raw em `logs/webhook_payloads.jsonl` antes de qualquer filtro.
+- **Por que manter:** Observabilidade. Permite debug de qualquer comportamento futuro sem precisar reproduzir.
+
+#### Fix: MAX_TOOL_ROUNDS contava histórico inteiro (review)
+- **Sintoma:** Se lead teve 4 tool calls em conversa anterior + 2 novas = 6 → encerrava prematuramente.
+- **Fix:** Counter agora conta apenas após último HumanMessage (desta invocação), não do histórico.
+
+**Arquivos modificados:** core/prompts.py, core/tools.py, core/context_detector.py, core/grafo.py, api/webhooks/leadbox.py, infra/nodes_supabase.py, infra/leadbox_client.py, infra/retry.py, tests/cenarios.json, tests/test_fromme_detection.py (novo), simulate.py, test-flow/runner.py, MEMORY.md
+
+---
 
 ### 2026-04-06 — Auditoria industrial + sistema de incidentes
 

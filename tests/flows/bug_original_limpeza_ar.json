@@ -1,0 +1,65 @@
+{
+  "flow_name": "bug_original_limpeza_ar",
+  "data": "2026-04-10",
+  "nos": [
+    {
+      "id": 1,
+      "tipo": "INPUT",
+      "label": "Histórico injetado",
+      "dados": {
+        "total_mensagens": 21,
+        "historico_mensagens": 20,
+        "ultimo_input": "Qual dia vocês pode está indo busca?",
+        "lead_original": "556699198912"
+      }
+    },
+    {
+      "id": 2,
+      "tipo": "GRAFO",
+      "label": "Invocação graph.ainvoke()",
+      "dados": {
+        "modelo": "gemini-2.0-flash",
+        "prompt_version": "pos-correcao",
+        "nota": "Prompt sem sintaxe literal de tool calls (Ação 3 aplicada)"
+      }
+    },
+    {
+      "id": 3,
+      "tipo": "OUTPUT_IA",
+      "label": "O que o modelo retornou",
+      "dados": {
+        "raw_messages": [
+          {
+            "type": "ai",
+            "content": "Preciso transferir você para o atendimento para verificar a disponibilidade, ok?",
+            "tool_calls": [],
+            "finish_reason": "STOP"
+          }
+        ],
+        "content": "Preciso transferir você para o atendimento para verificar a disponibilidade, ok?",
+        "tool_calls": []
+      }
+    },
+    {
+      "id": 4,
+      "tipo": "VALIDACAO",
+      "label": "Checagens",
+      "dados": {
+        "tool_como_texto": false,
+        "tool_chamada": false,
+        "content_limpo": true,
+        "tool_texto_detalhe": null
+      }
+    },
+    {
+      "id": 5,
+      "tipo": "RESULTADO",
+      "label": "PASS",
+      "dados": {
+        "resultado": "PASS",
+        "tempo_ms": 703,
+        "observacao": "Content limpo, sem tool-as-text"
+      }
+    }
+  ]
+}

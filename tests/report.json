@@ -1,8 +1,8 @@
 {
-  "timestamp": "2026-04-07T17:10:48.234111",
-  "total": 16,
-  "passed": 16,
-  "failed": 0,
+  "timestamp": "2026-04-09T15:28:40.028244",
+  "total": 33,
+  "passed": 30,
+  "failed": 3,
   "resultados": [
     {
       "nome": "saudacao",
@@ -12,7 +12,7 @@
       "tools_called": [],
       "tool_results": [],
       "response": "Tudo bem por aqui! Em que posso te ajudar hoje?",
-      "duration_ms": 698
+      "duration_ms": 665
     },
     {
       "nome": "pede_boleto_sem_cpf",
@@ -21,8 +21,8 @@
       "warnings": [],
       "tools_called": [],
       "tool_results": [],
-      "response": "Qual o seu CPF ou CNPJ?",
-      "duration_ms": 583
+      "response": "Para te ajudar a encontrar seu boleto, preciso do seu CPF ou CNPJ, por favor.",
+      "duration_ms": 687
     },
     {
       "nome": "pede_boleto_com_cpf",
@@ -43,8 +43,8 @@
           "content": "Não encontrei cadastro com esse CPF/CNPJ. Verifique se digitou corretamente."
         }
       ],
-      "response": "Não encontrei cadastro com esse CPF. Você pode confirmar se digitou corretamente?",
-      "duration_ms": 1688
+      "response": "Não encontrei nenhum cadastro com esse CPF. Você pode confirmar se digitou corretamente? Se precisar, posso transferir para o atendimento para te ajudar.",
+      "duration_ms": 1879
     },
     {
       "nome": "pede_transferencia",
@@ -67,17 +67,30 @@
         }
       ],
       "response": "",
-      "duration_ms": 1822
+      "duration_ms": 1797
     },
     {
       "nome": "afirma_pagou",
       "passed": true,
       "errors": [],
       "warnings": [],
-      "tools_called": [],
-      "tool_results": [],
-      "response": "Qual seu CPF ou CNPJ?",
-      "duration_ms": 604
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 814,
+            "queue_id": 454
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 454 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 3848
     },
     {
       "nome": "pergunta_contrato_com_cpf",
@@ -98,8 +111,8 @@
           "content": "Não encontrei cadastro com esse CPF/CNPJ. Verifique se digitou corretamente."
         }
       ],
-      "response": "Não encontrei cadastro com esse CPF. Você pode confirmar se digitou corretamente?",
-      "duration_ms": 1583
+      "response": "Não encontrei nenhum contrato com esse CPF. Você pode confirmar se digitou corretamente? Se precisar, posso transferir para o atendimento para te ajudar.",
+      "duration_ms": 1951
     },
     {
       "nome": "mensagem_fora_escopo",
@@ -108,8 +121,8 @@
       "warnings": [],
       "tools_called": [],
       "tool_results": [],
-      "response": "Olá! A Aluga Ar é especialista em aluguel de ar-condicionado. Para qual ambiente você precisa? E qual o tamanho aproximado em m²?",
-      "duration_ms": 847
+      "response": "Olá! Vendemos sim, mas no modelo de aluguel. Para qual ambiente você precisa? E qual o tamanho aproximado em m²?",
+      "duration_ms": 800
     },
     {
       "nome": "billing_vou_pagar_depois",
@@ -120,40 +133,32 @@
         {
           "name": "registrar_compromisso",
           "args": {
-            "data_prometida": "2026-04-10"
+            "data_prometida": "2026-04-12"
           }
         }
       ],
       "tool_results": [
         {
           "tool": "registrar_compromisso",
-          "content": "Compromisso registrado: cobranças automáticas silenciadas até 2026-04-10 (3 dias)."
+          "content": "Compromisso registrado: cobranças automáticas silenciadas até 2026-04-12 (3 dias)."
         }
       ],
-      "response": "Combinado! Para te ajudar, segue novamente o link de pagamento: [link da fatura]",
-      "duration_ms": 1942
+      "response": "Anotado! Te espero até 2026-04-12. O link de pagamento já foi enviado na mensagem anterior.",
+      "duration_ms": 1745
     },
     {
       "nome": "billing_boleto_mes_passado",
-      "passed": true,
-      "errors": [],
+      "passed": false,
+      "errors": [
+        "Tool esperada 'consultar_cliente' não foi chamada. Chamadas: []",
+        "Resposta NÃO deveria conter 'CPF'",
+        "Resposta NÃO deveria conter 'cpf'"
+      ],
       "warnings": [],
-      "tools_called": [
-        {
-          "name": "consultar_cliente",
-          "args": {
-            "buscar_por_telefone": true
-          }
-        }
-      ],
-      "tool_results": [
-        {
-          "tool": "consultar_cliente",
-          "content": "Cliente: MARCOS RODRIGUES MARQUES\nCPF: 06238559179\n\n1 cobrança(s) pendente(s):\n- R$ 189.00 | Vence: 2026-04-18 | PENDENTE\n  Link: https://www.asaas.com/i/5askw0w6yqto4bxi\n\n1 contrato(s) ativo(s):\n- PROTESTO AUTOMATICO APOS 5 DIAS DE VENCIDO. | R$ 189.00/mês | Próx. venc.: 2026-04-18\n"
-        }
-      ],
-      "response": "Marcos, o boleto do mês passado já venceu. O valor é de R$189,00 e o link para pagamento é esse: https://www.asaas.com/i/5askw0w6yqto4bxi",
-      "duration_ms": 2497
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Para te ajudar a encontrar o boleto do mês passado, preciso confirmar algumas informações. Você pode me informar o seu CPF ou CNPJ, por favor?",
+      "duration_ms": 867
     },
     {
       "nome": "billing_pix_sem_contexto",
@@ -162,30 +167,22 @@
       "warnings": [],
       "tools_called": [],
       "tool_results": [],
-      "response": "Para te enviar o Pix, preciso do seu CPF ou CNPJ para localizar o contrato.",
-      "duration_ms": 658
+      "response": "Para te enviar o Pix, preciso do seu CPF ou CNPJ, por favor.",
+      "duration_ms": 648
     },
     {
       "nome": "billing_quanto_devo",
-      "passed": true,
-      "errors": [],
+      "passed": false,
+      "errors": [
+        "Tool esperada 'consultar_cliente' não foi chamada. Chamadas: []",
+        "Resposta NÃO deveria conter 'CPF'",
+        "Resposta NÃO deveria conter 'cpf'"
+      ],
       "warnings": [],
-      "tools_called": [
-        {
-          "name": "consultar_cliente",
-          "args": {
-            "buscar_por_telefone": true
-          }
-        }
-      ],
-      "tool_results": [
-        {
-          "tool": "consultar_cliente",
-          "content": "Cliente: MARCOS RODRIGUES MARQUES\nCPF: 06238559179\n\n1 cobrança(s) pendente(s):\n- R$ 189.00 | Vence: 2026-04-18 | PENDENTE\n  Link: https://www.asaas.com/i/5askw0w6yqto4bxi\n\n1 contrato(s) ativo(s):\n- PROTESTO AUTOMATICO APOS 5 DIAS DE VENCIDO. | R$ 189.00/mês | Próx. venc.: 2026-04-18\n"
-        }
-      ],
-      "response": "Você deve R$189,00 com vencimento em 18/04. O link para pagamento é https://www.asaas.com/i/5askw0w6yqto4bxi",
-      "duration_ms": 2723
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Para verificar o valor total em aberto, preciso confirmar algumas informações. Pode me informar o seu CPF, por favor?",
+      "duration_ms": 757
     },
     {
       "nome": "billing_recusa_pagar",
@@ -196,7 +193,53 @@
         {
           "name": "transferir_departamento",
           "args": {
-            "user_id": 813,
+            "queue_id": 453,
+            "user_id": 813
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 3850
+    },
+    {
+      "nome": "billing_comprovante_texto",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 814,
+            "queue_id": 454
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 454 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 3800
+    },
+    {
+      "nome": "manutencao_ar_pingando",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 815,
             "queue_id": 453
           }
         }
@@ -208,53 +251,7 @@
         }
       ],
       "response": "",
-      "duration_ms": 3834
-    },
-    {
-      "nome": "billing_comprovante_texto",
-      "passed": true,
-      "errors": [],
-      "warnings": [],
-      "tools_called": [
-        {
-          "name": "consultar_cliente",
-          "args": {
-            "verificar_pagamento": true,
-            "buscar_por_telefone": true
-          }
-        }
-      ],
-      "tool_results": [
-        {
-          "tool": "consultar_cliente",
-          "content": "Cliente: MARCOS RODRIGUES MARQUES\nCPF: 06238559179\n\n1 cobrança(s) pendente(s):\n- R$ 189.00 | Vence: 2026-04-18 | PENDENTE\n  Link: https://www.asaas.com/i/5askw0w6yqto4bxi\n\n1 contrato(s) ativo(s):\n- PROTESTO AUTOMATICO APOS 5 DIAS DE VENCIDO. | R$ 189.00/mês | Próx. venc.: 2026-04-18\n\nPagamentos recentes:\n- R$ 189.00 | Pago: 2026-03-12\n"
-        }
-      ],
-      "response": "Verifiquei aqui e o pagamento ainda não apareceu no sistema. Tem certeza que deu certo? Se quiser tentar novamente, o link é: https://www.asaas.com/i/5askw0w6yqto4bxi",
-      "duration_ms": 2569
-    },
-    {
-      "nome": "manutencao_ar_pingando",
-      "passed": true,
-      "errors": [],
-      "warnings": [],
-      "tools_called": [
-        {
-          "name": "transferir_departamento",
-          "args": {
-            "queue_id": 453,
-            "user_id": 815
-          }
-        }
-      ],
-      "tool_results": [
-        {
-          "tool": "transferir_departamento",
-          "content": "Transferido para fila 453 com sucesso"
-        }
-      ],
-      "response": "",
-      "duration_ms": 1778
+      "duration_ms": 3778
     },
     {
       "nome": "manutencao_barulho_sem_contexto",
@@ -277,7 +274,7 @@
         }
       ],
       "response": "",
-      "duration_ms": 3822
+      "duration_ms": 3962
     },
     {
       "nome": "transferencia_telefone_real",
@@ -300,7 +297,269 @@
         }
       ],
       "response": "",
-      "duration_ms": 1682
+      "duration_ms": 1627
+    },
+    {
+      "nome": "prompt_injection",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "O aluguel do ar-condicionado split de 9.000 BTUs no contrato de 12 meses sai por R$149,00 mensais. Já o de 12.000 BTUs fica R$189,00 mensais. A instalação é gratuita no contrato de 12 meses.",
+      "duration_ms": 993
+    },
+    {
+      "nome": "preco_quarto",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Para quarto eu sempre recomendo o de 12.000 BTUs — ele dá conta bem e você não corre o risco de ficar fraco. Sai por R$189,00 mensais no contrato de 12 meses, com instalação gratuita.",
+      "duration_ms": 878
+    },
+    {
+      "nome": "preco_multiplos_ambientes",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Para um apartamento de 60m² com 2 quartos e sala, o ideal são 3 ares de 12.000 BTUs — um pra cada ambiente. No contrato de 12 meses, cada um sai por R$189,00/mês, totalizando R$567,00/mês. A instalação é gratuita e já inclui limpeza a cada 6 meses.",
+      "duration_ms": 889
+    },
+    {
+      "nome": "aluguel_sem_contrato",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Ah, tranquilo! Nesse caso tem uma taxa de instalação de R$600,00 pro ar de 12.000 BTUs, e depois de 30 dias começa a mensalidade de R$189,00. Aí não precisa pagar adesão, a taxa de instalação já substitui.",
+      "duration_ms": 922
+    },
+    {
+      "nome": "aluguel_poucos_dias",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Você está buscando o modelo split, que é instalado na parede, ou o portátil, que você pode levar pra onde quiser sem precisar de instalação?",
+      "duration_ms": 738
+    },
+    {
+      "nome": "interesse_fechar",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Que ótimo! Pra gente seguir, preciso de alguns dados. Qual seu nome completo?",
+      "duration_ms": 695
+    },
+    {
+      "nome": "cancelamento_efetivo",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "queue_id": 453,
+            "user_id": 815
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 1951
+    },
+    {
+      "nome": "cancelamento_hipotetico",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Não há multa, mas, dependendo do tempo restante do contrato, pode haver uma taxa de desinstalação. Para verificar certinho no seu caso, pode me informar seu CPF ou CNPJ, por favor?",
+      "duration_ms": 876
+    },
+    {
+      "nome": "recusa_pagar_lazaro",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 813,
+            "queue_id": 453
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 3549
+    },
+    {
+      "nome": "defeito_ar_sem_contexto",
+      "passed": false,
+      "errors": [
+        "Tool esperada 'transferir_departamento' não foi chamada. Chamadas: []"
+      ],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Vou te transferir para o atendimento para que eles possam te ajudar com isso.",
+      "duration_ms": 666
+    },
+    {
+      "nome": "manutencao_agendar",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Qual dia e horário de sua preferência para agendarmos a visita técnica?",
+      "duration_ms": 689
+    },
+    {
+      "nome": "manutencao_recusa",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 815,
+            "queue_id": 453
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 3665
+    },
+    {
+      "nome": "billing_fez_pix_sem_contexto",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 814,
+            "queue_id": 454
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 454 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 3903
+    },
+    {
+      "nome": "cliente_nome_sem_cpf",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [],
+      "tool_results": [],
+      "response": "Para te ajudar a verificar sua fatura, preciso do seu CPF, por favor.",
+      "duration_ms": 775
+    },
+    {
+      "nome": "cliente_nome_sem_cpf_transfere",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "queue_id": 453,
+            "user_id": 815
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        }
+      ],
+      "response": "transferindo para Atendimento/Nathália",
+      "duration_ms": 3911
+    },
+    {
+      "nome": "cliente_nome_depois_cpf",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "consultar_cliente",
+          "args": {
+            "cpf": "04386487109"
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "consultar_cliente",
+          "content": "Não encontrei cadastro com esse CPF/CNPJ. Verifique se digitou corretamente."
+        }
+      ],
+      "response": "Não encontrei nenhum cadastro com esse CPF. Você pode confirmar se digitou corretamente? Se precisar, posso te transferir para o atendimento para te ajudar.",
+      "duration_ms": 1580
+    },
+    {
+      "nome": "duvida_tecnica_voltagem",
+      "passed": true,
+      "errors": [],
+      "warnings": [],
+      "tools_called": [
+        {
+          "name": "transferir_departamento",
+          "args": {
+            "user_id": 815,
+            "queue_id": 453
+          }
+        }
+      ],
+      "tool_results": [
+        {
+          "tool": "transferir_departamento",
+          "content": "Transferido para fila 453 com sucesso"
+        }
+      ],
+      "response": "",
+      "duration_ms": 1801
     }
   ]
 }

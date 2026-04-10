@@ -31,8 +31,9 @@ from core.prompts import SYSTEM_PROMPT
 TIMEZONE_OFFSET = -4  # UTC-4 (Mato Grosso)
 
 # Filas onde a IA responde (importado de constants)
-from core.constants import IA_QUEUES, TABLE_LEADS
+from core.constants import IA_QUEUES, TABLE_LEADS, QUEUE_IA, USER_IA
 FALLBACK_MSG = "Desculpe, ocorreu um erro interno. Por favor, tente novamente em alguns instantes."
+MAX_TOOL_ROUNDS = 5
 ADMIN_PHONE = os.environ.get("ADMIN_PHONE")
 
 
@@ -50,12 +51,16 @@ class State(TypedDict):
 # MODEL
 # =============================================================================
 
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+
+
 def _build_model():
     """Instancia Gemini com tools vinculadas (chamado 1x)."""
     from google.ai.generativelanguage_v1beta.types import HarmCategory, SafetySetting
 
+    logger.info(f"[MODEL] Inicializando modelo: {GEMINI_MODEL}")
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model=GEMINI_MODEL,
         google_api_key=os.environ.get("GOOGLE_API_KEY"),
         temperature=0.3,
         max_output_tokens=4096,
@@ -110,9 +115,20 @@ _context_extra: dict = {}
 
 
 def route_model_output(state: State) -> Literal["tools", "__end__"]:
-    """Se LLM chamou tool → 'tools', senão → END."""
+    """Se LLM chamou tool → 'tools', senão → END. Limita rounds para evitar loops."""
     last = state["messages"][-1]
     if isinstance(last, AIMessage) and last.tool_calls:
+        # Contar apenas tool rounds DESTA invocação (após último HumanMessage)
+        # Ignora histórico de conversas anteriores
+        rounds = 0
+        for m in reversed(state["messages"]):
+            if isinstance(m, HumanMessage):
+                break
+            if isinstance(m, AIMessage) and m.tool_calls:
+                rounds += 1
+        if rounds >= MAX_TOOL_ROUNDS:
+            logger.warning(f"[GRAFO] Limite de {MAX_TOOL_ROUNDS} tool rounds atingido — encerrando")
+            return END
         return "tools"
     return END
 
@@ -198,6 +214,7 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
         return
 
     # 1b. Fail-safe: verificar fila no Supabase (DB pode estar mais atualizado que Redis)
+    current_queue = QUEUE_IA  # default para lead novo ou falha na query
     try:
         from infra.supabase import get_supabase
         _sb = get_supabase()
@@ -208,6 +225,8 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
             if _lead.data:
                 _queue = _lead.data[0].get("current_queue_id")
                 _state = _lead.data[0].get("current_state")
+                if _queue is not None:
+                    current_queue = int(_queue)
                 # NULL = lead novo, pode processar
                 # Fila IA (537/544/545) = pode processar
                 # state="human" ou fila humana = ignorar
@@ -317,9 +336,12 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
 
     if result is None:
         _context_extra.pop(phone, None)
+        if await redis.is_paused(phone):
+            logger.info(f"[GRAFO:{phone}] Pausa detectada antes do fallback — abortando")
+            return
         from infra.leadbox_client import enviar_resposta_leadbox
         from infra.incidentes import registrar_incidente
-        enviar_resposta_leadbox(phone, FALLBACK_MSG)
+        enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
         log_event("error", phone, error=str(last_error)[:200] if last_error else "no_result")
         registrar_incidente(phone, "gemini_falhou", str(last_error)[:500] if last_error else "no_result")
         if last_error:
@@ -345,10 +367,6 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
                 "total": um.get("total_tokens", 0),
             }
             break
-
-    # Salvar todas as mensagens do agente (incluindo tool_calls)
-    if mensagens_agente:
-        salvar_mensagens_agente(phone, mensagens_agente, usage=usage or None)
 
     # 8. Extrair resposta final e enviar
     resposta = None
@@ -390,6 +408,47 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
             except Exception:
                 pass
 
+    # INTERCEPTOR: bloquear tool-as-text de chegar ao cliente
+    # Se Gemini escreveu nome de tool como texto (bug conhecido do 2.0 Flash),
+    # bloquear envio e executar a ação diretamente ou transferir para humano
+    from core.hallucination import detectar_tool_como_texto
+    tool_texto = detectar_tool_como_texto(resposta) if resposta else None
+    if tool_texto:
+        logger.warning(f"[GRAFO:{phone}] TOOL-AS-TEXT interceptada: {tool_texto['tool']} — bloqueando envio")
+        log_event("tool_as_text_blocked", phone, tool=tool_texto["tool"], text=resposta[:100])
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(phone, "tool_como_texto", f"Gemini escreveu {tool_texto['tool']} como texto", {"resposta": resposta[:300]})
+
+        # Se era transferência, executar diretamente
+        if tool_texto["tool"] == "transferir_departamento" and tool_texto.get("queue_id") and tool_texto.get("user_id"):
+            try:
+                from core.tools import transferir_departamento
+                result_transfer = transferir_departamento.invoke({
+                    "queue_id": tool_texto["queue_id"],
+                    "user_id": tool_texto["user_id"],
+                    "phone": phone,
+                })
+                if "Erro" in str(result_transfer):
+                    logger.error(f"[GRAFO:{phone}] Interceptor: transferência falhou — {result_transfer}")
+                    log_event("tool_as_text_transfer_failed", phone, tool="transferir_departamento", queue_id=tool_texto["queue_id"], error=str(result_transfer)[:200])
+                    from infra.leadbox_client import enviar_resposta_leadbox
+                    enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
+                else:
+                    logger.info(f"[GRAFO:{phone}] Transferência executada via interceptor: fila {tool_texto['queue_id']} → {result_transfer}")
+                    log_event("tool_as_text_recovered", phone, tool="transferir_departamento", queue_id=tool_texto["queue_id"])
+            except Exception as e:
+                logger.error(f"[GRAFO:{phone}] Falha ao executar transferência via interceptor: {e}", exc_info=True)
+                from infra.leadbox_client import enviar_resposta_leadbox
+                enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
+        else:
+            # Outra tool como texto → fallback genérico + transferir para humano
+            from infra.leadbox_client import enviar_resposta_leadbox
+            enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
+
+        # Limpar contexto e sair (não enviar resposta original)
+        _context_extra.pop(phone, None)
+        return
+
     # Auto-snooze 48h: se era contexto billing e Ana NÃO transferiu, silencia disparos
     from core.auto_snooze import auto_snooze_billing
     ctx_extra = _context_extra.get(phone, "")
@@ -398,10 +457,23 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     # Limpar cache de contexto
     _context_extra.pop(phone, None)
 
+    # Re-check pausa antes de enviar (humano pode ter assumido durante processamento)
+    if await redis.is_paused(phone):
+        logger.info(f"[GRAFO:{phone}] Pausa detectada antes do envio — abortando resposta")
+        log_event("paused_before_send", phone)
+        return
+
+    # Salvar todas as mensagens do agente (incluindo tool_calls) — após re-check pausa
+    # para evitar histórico fantasma (resposta salva mas nunca enviada)
+    if mensagens_agente:
+        salvar_mensagens_agente(phone, mensagens_agente, usage=usage or None)
+
     # Enviar resposta via Leadbox
     from infra.leadbox_client import enviar_resposta_leadbox
 
     if resposta:
-        enviar_resposta_leadbox(phone, resposta)
+        enviar_resposta_leadbox(phone, resposta, queue_id=current_queue, user_id=USER_IA)
     else:
-        enviar_resposta_leadbox(phone, FALLBACK_MSG)
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(phone, "resposta_vazia", "Gemini retornou sem texto")
+        enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)

@@ -181,7 +181,8 @@ async def handle_queue_change(phone: str, queue_id: int, user_id, ticket_id):
                 "paused_by"
             ).eq("telefone", phone).limit(1).execute()
             paused_by = (lead_row.data[0].get("paused_by") or "") if lead_row.data else ""
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[LEADBOX:{phone}] Falha ao checar paused_by: {e}")
             paused_by = ""
 
         if paused_by == "human_fromMe":
@@ -266,11 +267,6 @@ async def leadbox_webhook(request: Request):
         f"user={user_id} ticket={ticket_id} tenant={tenant_id_payload}"
     )
 
-    # ⛔ KILL SWITCH — mensagem do cliente chega, loga, mas não processa
-    if event_type == "NewMessage" and not message.get("fromMe", False):
-        logger.warning(f"[LEADBOX:{phone}] KILL SWITCH — msg cliente bloqueada antes da IA")
-        return {"status": "ok", "event": "kill_switch"}
-
     # Filtrar por tenant
     if tenant_id_payload and int(tenant_id_payload) != TENANT_ID:
         return {"status": "ignored", "reason": "wrong_tenant"}
@@ -289,25 +285,26 @@ async def leadbox_webhook(request: Request):
         nome = contact.get("name") or contact.get("pushName") or ""
 
         if from_me:
-            # Checar se é eco da própria IA (marker Redis com TTL 15s)
+            send_type = message.get("sendType")
+
+            # Camada 1: marker Redis (TTL 15s) — setado por todos os 7 pontos de envio da IA
             redis = await get_redis_service()
             agent_id = os.environ.get("AGENT_ID", "ana-langgraph")
             marker_key = f"sent:ia:{agent_id}:{phone}"
             is_ia_echo = await redis.client.exists(marker_key)
 
             if is_ia_echo:
-                # Eco da IA — limpar marker e ignorar
                 await redis.client.delete(marker_key)
-                logger.info(f"[LEADBOX:{phone}] NewMessage fromMe — eco da IA, ignorando")
+                logger.info(f"[LEADBOX:{phone}] fromMe eco IA (marker) — ignorando")
                 return {"status": "ok", "event": "ia_echo"}
 
-            # Se ticket está em fila da IA, fromMe é sempre da IA (billing/manutenção dispatch)
-            ticket_queue = ticket.get("queueId")
-            if ticket_queue and ticket_queue in IA_QUEUES:
-                logger.info(f"[LEADBOX:{phone}] NewMessage fromMe em fila IA ({ticket_queue}) — ignorando")
-                return {"status": "ok", "event": "ia_echo_queue"}
+            # Camada 2: sendType=API é sempre a IA (fallback se marker expirou)
+            if send_type == "API":
+                logger.info(f"[LEADBOX:{phone}] fromMe sendType=API (IA) — ignorando")
+                return {"status": "ok", "event": "ia_echo_api"}
 
-            # Humano real respondeu → pausar IA para este lead
+            # Camada 3: sem marker + sendType != API → humano real → PAUSAR IA
+            logger.info(f"[LEADBOX:{phone}] fromMe HUMANO (sendType={send_type}, userId={message.get('userId')}) → pausando IA")
             supabase = get_supabase()
             if not await redis.is_paused(phone):
                 await redis.pause_set(phone)

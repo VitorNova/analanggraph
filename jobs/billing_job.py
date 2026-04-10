@@ -24,6 +24,9 @@ load_dotenv()
 from infra.supabase import get_supabase
 from core.constants import TABLE_LEADS, TABLE_ASAAS_CLIENTES, TABLE_ASAAS_COBRANCAS
 
+# UUID do agente Ana na tabela agents (usado em asaas_cobrancas.agent_id)
+ANA_AGENT_UUID = "14e6e5ce-4627-4e38-aac8-f0191669ff53"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -33,16 +36,24 @@ logger = logging.getLogger(__name__)
 # Régua de cobrança: offsets em dias úteis onde envia
 SCHEDULE = [0, 1, 3, 5, 7, 10, 15]
 
-# Templates aprovados — texto EXATO do WhatsApp, sem emoji, sem alteração
-TEMPLATES = {
+# Mapeamento: tipo de disparo → template oficial WhatsApp (nome no Meta)
+# Params são sempre: [nome, valor, vencimento, link] na ordem {{1}}..{{4}}
+WHATSAPP_TEMPLATES = {
+    "due_date": "diavencimento",   # Vence hoje — 4 params
+    "overdue": "cobranca",         # Vencido — 4 params
+}
+
+# Texto legível para salvar no histórico (conversation_history)
+# Não é enviado ao WhatsApp — só para contexto interno
+TEMPLATES_HISTORICO = {
     "due_date": (
-        "Olá, {nome}. Sua mensalidade de R$ {valor} vence hoje ({vencimento}).\n\n"
-        "Link para pagamento: {link}\n\n"
+        "Olá, {nome}. Sua mensalidade de R$ {valor} vence hoje ({vencimento}).\n"
+        "Link para pagamento: {link}\n"
         "Se já efetuou o pagamento, desconsidere esta mensagem."
     ),
     "overdue": (
-        "Olá, {nome}. Sua mensalidade de R$ {valor} com vencimento em {vencimento} encontra-se em aberto.\n\n"
-        "Para regularizar, acesse: {link}\n\n"
+        "Olá, {nome}. Sua mensalidade de R$ {valor} com vencimento em {vencimento} encontra-se em aberto.\n"
+        "Para regularizar, acesse: {link}\n"
         "Se já efetuou o pagamento, desconsidere esta mensagem.\n"
         "Em caso de dúvida, responda aqui."
     ),
@@ -65,11 +76,9 @@ def count_business_days(from_date: date, to_date: date) -> int:
     return count * sign
 
 
-def get_template(offset: int) -> tuple:
-    """Retorna (template_key, template) baseado no offset."""
-    if offset == 0:
-        return "due_date", TEMPLATES["due_date"]
-    return "overdue", TEMPLATES["overdue"]
+def get_template_key(offset: int) -> str:
+    """Retorna template_key baseado no offset."""
+    return "due_date" if offset == 0 else "overdue"
 
 
 def buscar_elegiveis(hoje: date) -> list:
@@ -119,17 +128,20 @@ def buscar_elegiveis(hoje: date) -> list:
             if offset not in SCHEDULE:
                 continue
 
-            template_key, template = get_template(offset)
+            template_key = get_template_key(offset)
 
             link = cob.get("invoice_url") or ""
             if not link:
                 logger.warning(f"[BILLING] Cobrança {cob['id']} sem link de pagamento, pulando")
                 continue
-            message = template.format(
-                nome=cliente.get("name", "Cliente"),
-                valor=f"{cob['value']:.2f}",
-                vencimento=due.strftime("%d/%m/%Y"),
-                link=link,
+
+            nome = cliente.get("name", "Cliente")
+            valor = f"{cob['value']:.2f}"
+            vencimento = due.strftime("%d/%m/%Y")
+
+            # Texto legível para histórico interno (não enviado ao WhatsApp)
+            message = TEMPLATES_HISTORICO[template_key].format(
+                nome=nome, valor=valor, vencimento=vencimento, link=link,
             )
 
             elegiveis.append({
@@ -137,6 +149,7 @@ def buscar_elegiveis(hoje: date) -> list:
                 "message": message,
                 "reference_id": cob["id"],
                 "context_type": "billing",
+                "template_params": [nome, valor, vencimento, link],
                 "template_key": template_key,
                 "offset": offset,
             })
@@ -290,22 +303,40 @@ async def _processar_disparo(item: dict, redis) -> bool:
         "updated_at": now,
     }).eq("id", lead["id"]).execute()
 
-    # Enviar via Leadbox
-    from infra.leadbox_client import enviar_resposta_leadbox
+    # Enviar template via Meta API + registrar no Leadbox (CRM + fila)
+    from infra.leadbox_client import enviar_template_leadbox
+    from core.constants import QUEUE_BILLING, USER_IA
 
     tel_envio = clean_phone if clean_phone.startswith("55") else f"55{clean_phone}"
+    wa_template = WHATSAPP_TEMPLATES[item["template_key"]]
+    template_params = item["template_params"]
 
-    if not enviar_resposta_leadbox(tel_envio, message, raw=True):
-        logger.error(f"[BILLING:{phone}] Leadbox erro ao enviar")
-        log_event("billing_error", phone, reason="leadbox_send_failed", template=item.get("template_key"))
-        # Contexto já salvo, lead vai ter contexto quando responder
+    if not enviar_template_leadbox(
+        tel_envio, wa_template, template_params,
+        body_texto=message,
+        queue_id=QUEUE_BILLING,
+        user_id=USER_IA,
+    ):
+        logger.error(f"[BILLING:{phone}] Falha ao enviar template '{wa_template}'")
+        log_event("billing_error", phone, reason="template_failed", template=item.get("template_key"))
         await redis.client.set(dedup_key, "1", ex=86400)
         return False
 
-    # Mover ticket para fila de cobranças (544, IA user 1095)
-    from infra.leadbox_client import mover_para_fila
-    from core.constants import QUEUE_BILLING
-    mover_para_fila(tel_envio, queue_id=QUEUE_BILLING, user_id=1095)
+    # Marcar ia_cobrou na asaas_cobrancas (para o painel Cobranças & Pagamentos)
+    try:
+        existing = supabase.table(TABLE_ASAAS_COBRANCAS).select(
+            "ia_total_notificacoes"
+        ).eq("id", reference_id).eq("agent_id", ANA_AGENT_UUID).limit(1).execute()
+        total = (existing.data[0].get("ia_total_notificacoes") or 0) + 1 if existing.data else 1
+
+        supabase.table(TABLE_ASAAS_COBRANCAS).update({
+            "ia_cobrou": True,
+            "ia_cobrou_at": now,
+            "ia_ultimo_step": item["template_key"],
+            "ia_total_notificacoes": total,
+        }).eq("id", reference_id).eq("agent_id", ANA_AGENT_UUID).execute()
+    except Exception as e:
+        logger.warning(f"[BILLING:{phone}] Falha ao marcar ia_cobrou: {e}")
 
     # Marcar anti-duplicata (24h)
     await redis.client.set(dedup_key, "1", ex=86400)
