@@ -184,6 +184,7 @@ def transferir_departamento(
                 },
                 json={
                     "number": telefone_limpo,
+                    "externalKey": telefone_limpo,
                     "body": "O departamento ideal vai dar continuidade ao seu atendimento.",
                     "queueId": queue_id,
                     "userId": user_id,
