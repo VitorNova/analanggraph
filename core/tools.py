@@ -342,6 +342,8 @@ Exemplo 8: Cliente pergunta algo que você não sabe responder
     destino_lower = destino.lower().strip()
     if destino_lower not in MAPA_DESTINOS:
         logger.warning(f"[TOOL] Destino inválido: {destino}")
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(phone, "transferencia_falhou", f"Destino inválido: {destino}", {"destino": destino})
         return f"Erro: destino '{destino}' inválido. Use: atendimento, financeiro, cobrancas ou lazaro."
 
     queue_id, user_id, destino_nome = MAPA_DESTINOS[destino_lower]
@@ -490,7 +492,8 @@ Exemplo 5: Cliente diz "vou tentar pagar" (sem data específica)
             logger.info(f"[TOOL] Compromisso registrado: {phone} → {data_prometida} ({dias} dias)")
         except Exception as e:
             logger.warning(f"[TOOL] Erro ao salvar snooze no Supabase: {e}")
-            # Não retorna erro ao usuário — o compromisso foi "aceito" mesmo se não salvou
+            from infra.incidentes import registrar_incidente
+            registrar_incidente(phone, "snooze_falhou", f"Supabase update falhou: {e}"[:300], {"data": data_prometida})
 
     return f"Compromisso registrado: cobranças automáticas silenciadas até {data_prometida} ({dias} dia{'s' if dias != 1 else ''})."
 

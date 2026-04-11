@@ -240,6 +240,8 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
                     return
     except Exception as e:
         logger.warning(f"[GRAFO:{phone}] Fail-safe check falhou: {e}")
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(phone, "consulta_falhou", f"Fail-safe Supabase: {e}"[:300])
 
     # 2. Combinar mensagens do buffer
     textos = [m.get("texto", "") for m in messages if m.get("texto")]
@@ -437,6 +439,7 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
                     log_event("tool_as_text_recovered", phone, tool="transferir_departamento", destino=tool_texto["destino"])
             except Exception as e:
                 logger.error(f"[GRAFO:{phone}] Falha ao executar transferência via interceptor: {e}", exc_info=True)
+                registrar_incidente(phone, "transferencia_falhou", f"Interceptor exception: {e}"[:300], {"destino": tool_texto.get("destino")})
                 from infra.leadbox_client import enviar_resposta_leadbox
                 enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
         else:
