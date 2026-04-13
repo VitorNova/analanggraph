@@ -1,92 +1,144 @@
-"""Testes unitários para core/hallucination.py — detectar_tool_como_texto."""
+"""Teste unitário do detector de hallucination (core/hallucination.py).
 
-import pytest
-from core.hallucination import detectar_tool_como_texto
+Valida que a regex com \\b diferencia corretamente:
+- "transferi" (passado → hallucination) vs "transferir" (infinitivo → ok)
+- "encaminhei" vs "encaminhar"
+- "verifiquei" vs "verificar"
+
+Testa tanto a função pública `detectar_hallucination` (com AIMessage reais)
+quanto os patterns regex diretamente.
+"""
+
+import re
+from unittest.mock import MagicMock
+
+from core.hallucination import detectar_hallucination, _HALL_CHECKS
 
 
-class TestDetectarToolComoTexto:
-    """Testa a detecção de tool escrita como texto pelo Gemini."""
+# ── Helpers ──
 
-    def test_transferir_com_args_completos(self):
-        """String com chamada literal completa deve retornar tool + args."""
-        resultado = detectar_tool_como_texto(
-            "transferir_departamento(queue_id=453, user_id=815)"
-        )
-        assert resultado is not None
-        assert resultado["tool"] == "transferir_departamento"
-        assert resultado["queue_id"] == 453
-        assert resultado["user_id"] == 815
+def _detecta(resposta: str, tool_name: str) -> bool:
+    """Testa regex diretamente (sem AIMessage)."""
+    resp_lower = resposta.lower()
+    for tn, frases in _HALL_CHECKS:
+        if tn == tool_name:
+            return any(re.search(f, resp_lower) for f in frases)
+    return False
 
-    def test_transferir_financeiro(self):
-        """Transferência para financeiro com IDs diferentes."""
-        resultado = detectar_tool_como_texto(
-            "transferir_departamento(queue_id=454, user_id=814)"
-        )
-        assert resultado is not None
-        assert resultado["queue_id"] == 454
-        assert resultado["user_id"] == 814
 
-    def test_consultar_cliente_como_texto(self):
-        """consultar_cliente escrita como texto deve ser detectada."""
-        resultado = detectar_tool_como_texto(
-            "consultar_cliente(cpf='12345678901')"
-        )
-        assert resultado is not None
-        assert resultado["tool"] == "consultar_cliente"
+def _make_ai_message(content: str, tool_calls=None):
+    """Cria AIMessage mock com content e tool_calls."""
+    msg = MagicMock()
+    msg.content = content
+    msg.tool_calls = tool_calls or []
+    type(msg).__name__ = "AIMessage"
+    # Para isinstance check funcionar
+    return msg
 
-    def test_registrar_compromisso_como_texto(self):
-        """registrar_compromisso escrita como texto deve ser detectada."""
-        resultado = detectar_tool_como_texto(
-            "registrar_compromisso(data_prometida='2026-04-15')"
-        )
-        assert resultado is not None
-        assert resultado["tool"] == "registrar_compromisso"
 
-    def test_texto_normal_sem_tool(self):
-        """Resposta normal sem nome de tool deve retornar None."""
-        assert detectar_tool_como_texto("Olá! Como posso te ajudar?") is None
+def _patch_isinstance():
+    """Patch para isinstance funcionar com mocks no detectar_hallucination."""
+    from langchain_core.messages import AIMessage
+    return AIMessage
 
-    def test_texto_com_transferencia_natural(self):
-        """Texto que menciona 'transferir' sem sintaxe de função."""
-        assert detectar_tool_como_texto(
-            "Vou te transferir para o atendimento, só um momento."
-        ) is None
 
-    def test_texto_com_nome_da_tool_sem_parenteses(self):
-        """Nome da tool sem parênteses NÃO deve ser detectado."""
-        assert detectar_tool_como_texto(
-            "Vou usar transferir_departamento para te ajudar"
-        ) is None
+# ── Testes de Regex (unitários puros) ──
 
-    def test_string_vazia(self):
-        """String vazia retorna None."""
-        assert detectar_tool_como_texto("") is None
+def test_hallucination_real_transferi():
+    assert _detecta("Já transferi você para o financeiro.", "transferir_departamento")
 
-    def test_none(self):
-        """None retorna None."""
-        assert detectar_tool_como_texto(None) is None
 
-    def test_tool_com_espacos(self):
-        """Tool com espaços antes dos parênteses."""
-        resultado = detectar_tool_como_texto(
-            "transferir_departamento (queue_id=453, user_id=815)"
-        )
-        assert resultado is not None
-        assert resultado["tool"] == "transferir_departamento"
+def test_falso_positivo_transferir():
+    assert not _detecta("Posso te transferir para o financeiro?", "transferir_departamento")
 
-    def test_tool_dentro_de_frase(self):
-        """Tool embutida no meio de uma frase."""
-        resultado = detectar_tool_como_texto(
-            "Ok, vou chamar transferir_departamento(queue_id=453, user_id=815) agora."
-        )
-        assert resultado is not None
-        assert resultado["queue_id"] == 453
 
-    def test_transferir_sem_args(self):
-        """Tool com parênteses mas sem args extraíveis."""
-        resultado = detectar_tool_como_texto(
-            "transferir_departamento()"
-        )
-        assert resultado is not None
-        assert resultado["tool"] == "transferir_departamento"
-        assert "queue_id" not in resultado
+def test_falso_positivo_vou_transferir():
+    assert not _detecta("Vou te transferir para o financeiro, pode ser?", "transferir_departamento")
+
+
+def test_hallucination_encaminhei():
+    assert _detecta("Encaminhei seu caso para o atendimento.", "transferir_departamento")
+
+
+def test_falso_positivo_encaminhar():
+    assert not _detecta("Preciso encaminhar para o financeiro.", "transferir_departamento")
+
+
+def test_hallucination_te_passo_para():
+    assert _detecta("Te passo para o financeiro agora.", "transferir_departamento")
+
+
+def test_falso_positivo_direcionando():
+    assert not _detecta("Estou direcionando seu atendimento.", "transferir_departamento")
+
+
+def test_hallucination_registrei():
+    assert _detecta("Registrei seu compromisso para sexta.", "registrar_compromisso")
+
+
+def test_falso_positivo_registrar():
+    assert not _detecta("Posso registrar um compromisso?", "registrar_compromisso")
+
+
+def test_hallucination_compromisso_registrado():
+    assert _detecta("Compromisso registrado para dia 10.", "registrar_compromisso")
+
+
+def test_hallucination_verifiquei():
+    assert _detecta("Verifiquei aqui e seu pagamento consta.", "consultar_cliente")
+
+
+def test_falso_positivo_verificar():
+    assert not _detecta("Vou verificar seu pagamento.", "consultar_cliente")
+
+
+def test_hallucination_consultei():
+    assert _detecta("Consultei e encontrei 2 faturas.", "consultar_cliente")
+
+
+def test_falso_positivo_consultar():
+    assert not _detecta("Preciso consultar seu CPF.", "consultar_cliente")
+
+
+def test_hallucination_encontrei_no_sistema():
+    assert _detecta("Encontrei no sistema suas cobranças.", "consultar_cliente")
+
+
+def test_falso_positivo_encontrei_generico():
+    assert not _detecta("Não encontrei nada com esse CPF.", "consultar_cliente")
+
+
+# ── Testes da função detectar_hallucination (integração com AIMessage) ──
+
+def test_detectar_hallucination_com_tool_chamada():
+    """Se tool foi chamada, NÃO é hallucination mesmo com texto."""
+    from langchain_core.messages import AIMessage
+
+    msg_com_tool = AIMessage(content="", tool_calls=[{"name": "transferir_departamento", "args": {}, "id": "1"}])
+    msg_resposta = AIMessage(content="Já transferi você para o financeiro.")
+    result = detectar_hallucination([msg_com_tool, msg_resposta], "5565999990000")
+    assert "transferir_departamento" not in result
+
+
+def test_detectar_hallucination_sem_tool_chamada():
+    """Se tool NÃO foi chamada mas texto afirma, É hallucination."""
+    from langchain_core.messages import AIMessage
+
+    msg = AIMessage(content="Já transferi você para o financeiro.")
+    result = detectar_hallucination([msg], "5565999990000")
+    assert "transferir_departamento" in result
+
+
+def test_detectar_hallucination_texto_limpo():
+    """Texto normal sem afirmação de ação → sem hallucination."""
+    from langchain_core.messages import AIMessage
+
+    msg = AIMessage(content="Olá! Como posso te ajudar?")
+    result = detectar_hallucination([msg], "5565999990000")
+    assert result == []
+
+
+def test_detectar_hallucination_mensagem_vazia():
+    """Lista vazia → sem hallucination."""
+    result = detectar_hallucination([], "5565999990000")
+    assert result == []

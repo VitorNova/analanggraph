@@ -1,11 +1,31 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
-.env
 *.egg-info/
+
+# Secrets
+.env
+
+# Dependencies
 node_modules/
+
+# Tools / IDE
 .gstack/
-*.png
-logs/
 .mcp.json
 .playwright-mcp/
+.serena/cache/
+
+# MDs mortos (removidos 13/04/2026)
+LOGS.md
+
+# Media
+*.png
+
+# Logs (rotacionam, não versionados)
+logs/
+
+# Test results temporários (manter apenas tests/results/ para baselines)
+tests/scenario_results*.json
+tests/billing_results*.json
+tests/flows/
