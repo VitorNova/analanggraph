@@ -17,7 +17,7 @@
 | Webhook Leadbox ignorado | `api/webhooks/leadbox.py` — TENANT_ID, token query param |
 | Incidente nao registrado | `infra/incidentes.py` — 22 tipos |
 
-Testes: ver `tests/INDICE.md` para mapa completo de cenarios, pytest e baselines.
+Testes: ver `tests/INDICE.md` | Comandos: ver `docs/OPERACOES.md` | Diagnóstico: ver `docs/TROUBLESHOOTING.md`
 
 ---
 
@@ -64,132 +64,12 @@ ana-langgraph/
 │   └── manutencao_job.py       ← Job de manutenção automática
 ├── scripts/
 │   └── resumo.py               ← Script standalone de diagnóstico (events.jsonl)
-├── tests/
-│   ├── cenarios.json           ← Cenários do lead-simulator (fixture)
-│   ├── report.json             ← Último relatório de testes (fixture)
-│   ├── results/                ← Baselines versionados (2.0-flash vs 2.5-flash)
-│   ├── test_hallucination.py   ← Unitário: detectar_hallucination (falso passado vs infinitivo)
-│   ├── test_tool_como_texto.py ← Unitário: detectar_tool_como_texto (regex tool escrita como texto)
-│   ├── test_interceptor.py     ← Unitário: interceptor bloqueia envio e executa tool
-│   ├── test_interceptor_real.py← E2E: interceptor contra grafo real
-│   ├── test_context_detector.py← Unitário: detecção de contexto billing/manutenção
-│   ├── test_fromme_detection.py← Unitário: lógica fromMe (marker, sendType, fallback)
-│   ├── test_leadbox_client.py  ← Unitário: envio Leadbox + marker Redis
-│   ├── test_retry.py           ← Unitário: retry exponencial
-│   ├── test_user_attribution.py← E2E: atribuição de user correto na transferência
-│   ├── run_scenarios.py        ← Runner E2E: cenários gerais contra grafo real
-│   ├── run_billing_scenarios.py← Runner E2E: cenários de billing
-│   ├── run_tool_calls.py       ← Runner E2E: cenários de tool calling
-│   └── run_bug_original.py     ← Runner: reprodução do bug tool-as-text original
+├── tests/                      ← Ver tests/INDICE.md para mapa completo
 ├── logs/                       ← Gerado em runtime (gitignored)
-│   ├── events.jsonl            ← Eventos operacionais (rotação 5MB)
-│   └── webhook_payloads.jsonl  ← Payloads webhook raw
-├── .env                        ← Credenciais (gitignored)
-├── .gitignore
-├── ecosystem.config.js         ← PM2 config
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml          ← Compose base
-├── docker-compose.analang.yml  ← Compose específico Ana LangGraph
-├── docker-compose.traefik.yml  ← Compose Traefik (reverse proxy)
+├── docs/                       ← Fluxo, troubleshooting, operações
 ├── CLAUDE.md                   ← Este arquivo
 └── MEMORY.md                   ← Memória persistente entre sessões
 ```
-
-### Contagem: 30 arquivos Python
-
-| Camada | Arquivos | Linhas |
-|---|---|---|
-| `api/` | 2 | ~430 |
-| `core/` | 6 | ~1660 |
-| `infra/` | 7 | ~740 |
-| `jobs/` | 2 | ~600 |
-| `scripts/` | 1 | ~150 |
-| `tests/` | 12 | ~2930 |
-| **Total** | **30** | **~6510** |
-
----
-
-## Testes
-
-Mapa completo: ver `tests/INDICE.md`
-
-### Unitários (pytest)
-
-| Arquivo | Módulo testado | O que valida |
-|---|---|---|
-| `test_hallucination.py` | `core.hallucination` | `detectar_hallucination` — diferencia "transferi" (passado→halluc) de "transferir" (infinitivo→ok) |
-| `test_tool_como_texto.py` | `core.hallucination` | `detectar_tool_como_texto` — regex detecta `transferir_departamento(queue_id=...)` escrito como texto |
-| `test_interceptor.py` | `core.hallucination` | Interceptor bloqueia envio quando tool escrita como texto e executa a tool real |
-| `test_context_detector.py` | `core.context_detector` | Detecção de contexto billing/manutenção no histórico |
-| `test_fromme_detection.py` | `api.webhooks.leadbox` | Lógica fromMe: marker Redis → sendType → fallback humano |
-| `test_leadbox_client.py` | `infra.leadbox_client` | Envio para Leadbox + gravação marker Redis anti-eco |
-| `test_retry.py` | `infra.retry` | Retry exponencial com backoff |
-
-```bash
-# Rodar todos os unitários
-cd /var/www/ana-langgraph && source .venv/bin/activate
-PYTHONPATH=. pytest tests/test_*.py -v
-```
-
-### E2E (contra grafo real — requer .env + Redis + Supabase)
-
-| Arquivo | O que faz |
-|---|---|
-| `test_interceptor_real.py` | Interceptor contra Gemini real |
-| `test_user_attribution.py` | Verifica user correto na transferência |
-| `run_scenarios.py` | 76 cenários gerais (saudação, CPF, transferência, etc.) |
-| `run_billing_scenarios.py` | Cenários de cobrança (cliente com dívida) |
-| `run_tool_calls.py` | 8 cenários de tool calling esperado |
-| `run_bug_original.py` | Reprodução do bug tool-as-text com histórico real |
-
-```bash
-# Rodar suite E2E completa (lead-simulator skill)
-cd /var/www/ana-langgraph && source .venv/bin/activate
-export $(cat .env | grep -v '^#' | grep '=' | xargs)
-PYTHONPATH=. python tests/run_scenarios.py
-```
-
-### Baselines (tests/results/)
-
-| Arquivo | Modelo | Score |
-|---|---|---|
-| `all_20260410.json` | gemini-2.0-flash | 62/76 PASS |
-| `all_25flash_run1.json` | gemini-2.5-flash | 60/76 PASS |
-| `all_25flash_run2.json` | gemini-2.5-flash | 63/76 PASS |
-
----
-
-## Fluxo de mensagem
-
-```
-WhatsApp → Leadbox CRM → POST /webhook/leadbox
-  ↓
-Parser (extrair phone, texto, ticket, queue_id)
-  ↓
-Filtrar por tenant (123) e tipo de evento
-  ↓
-FinishedTicket? → reset lead (IA reativada)
-QueueChange? → pausar (fila humana) ou despausar (fila IA)
-  ↓
-NewMessage do cliente → buffer Redis (9s delay)
-  ↓ 9 segundos
-processar_mensagens()
-  ↓
-Verificar pausa (Redis + fail-safe Supabase)
-  ↓
-Detectar contexto billing/manutenção (1x, salva em _context_extra)
-  ↓
-Buscar histórico (ana_leads.conversation_history, últimas 20)
-  ↓
-graph.ainvoke() → Gemini + tools (retry 3x com backoff exponencial)
-  ↓
-Salvar resposta no histórico (incluindo tool_calls e usage)
-  ↓
-Enviar via API externa Leadbox (POST com token query param)
-```
-
-> NewMessage ATIVO desde 2026-04-04. Webhook Leadbox configurado em `https://ana.fazinzz.com/webhook/leadbox`.
 
 ---
 
@@ -264,122 +144,6 @@ LEADBOX_API_URL, LEADBOX_API_UUID, LEADBOX_API_TOKEN  # credenciais da API
 
 ---
 
-## Comandos
-
-```bash
-# Logs PM2 (últimas 50 linhas)
-pm2 logs ana-langgraph --lines 50 --nostream
-
-# Restart
-pm2 restart ana-langgraph
-
-# Health
-curl http://127.0.0.1:3202/health
-
-# Testar webhook Leadbox
-curl -X POST http://127.0.0.1:3202/webhook/leadbox \
-  -H "Content-Type: application/json" \
-  -d '{"event":"NewMessage","tenantId":123,"message":{"body":"Oi","fromMe":false,"ticket":{"id":999,"queueId":537,"contact":{"number":"5565999990000"}}}}'
-
-# Testes unitários (rápido, sem dependências externas)
-cd /var/www/ana-langgraph && source .venv/bin/activate
-PYTHONPATH=. pytest tests/test_*.py -v
-
-# Testes E2E (requer .env, Redis, Supabase, Gemini)
-export $(cat .env | grep -v '^#' | grep '=' | xargs)
-PYTHONPATH=. python tests/run_scenarios.py
-
-# Lead-simulator (skill Claude)
-PYTHONPATH=/var/www/ana-langgraph python ~/.claude/skills/lead-simulator/scripts/simulate.py
-
-# Diagnóstico de eventos (script standalone)
-python scripts/resumo.py              # resumo geral
-python scripts/resumo.py --last 1h    # última hora
-python scripts/resumo.py --errors     # só erros
-```
-
----
-
-## Diagnóstico de Produção
-
-Quando pedirem para "olhar logs", "ver se deu erro", ou "verificar o que aconteceu", usar estas 3 camadas:
-
-### Camada 1: Incidentes graves (Supabase — `ana_incidentes`)
-```bash
-# Últimos 20 incidentes
-source .venv/bin/activate && export $(cat .env | grep -v '^#' | grep '=' | xargs)
-python3 -c "
-from infra.supabase import get_supabase
-sb = get_supabase()
-r = sb.table('ana_incidentes').select('*').order('created_at', desc=True).limit(20).execute()
-for i in r.data:
-    print(f\"{i['created_at'][:19]} | {i['tipo']:25} | {i['telefone']:15} | {i.get('detalhe','')[:80]}\")
-"
-
-# Filtrar por telefone específico
-python3 -c "
-from infra.supabase import get_supabase
-sb = get_supabase()
-r = sb.table('ana_incidentes').select('*').eq('telefone','PHONE_AQUI').order('created_at', desc=True).limit(10).execute()
-for i in r.data: print(f\"{i['created_at'][:19]} | {i['tipo']} | {i.get('detalhe','')[:100]}\")
-"
-```
-
-**24 tipos de incidente:** hallucination, tool_como_texto, gemini_falhou, resposta_vazia, consulta_falhou, transferencia_falhou, envio_falhou, mover_fila_falhou, marker_ia_falhou, buffer_erro, upsert_lead_erro, salvar_msg_erro, historico_busca_erro, historico_erro, retry_esgotado, contexto_falhou, snooze_falhou, billing_erro, manutencao_erro, media_erro, lead_reset_erro, pausa_erro, webhook_erro.
-
-### Camada 2: Eventos operacionais (local — `logs/events.jsonl`)
-```bash
-# Últimos 30 eventos
-tail -30 logs/events.jsonl | python3 -m json.tool
-
-# Filtrar por telefone
-grep "PHONE_AQUI" logs/events.jsonl | tail -20 | python3 -m json.tool
-
-# Contar eventos por tipo
-cat logs/events.jsonl | python3 -c "
-import sys,json,collections
-c=collections.Counter(json.loads(l).get('event','?') for l in sys.stdin)
-for k,v in c.most_common(): print(f'{v:5} {k}')
-"
-```
-
-### Camada 3: Payloads webhook raw (local — `logs/webhook_payloads.jsonl`)
-```bash
-# Últimos webhooks
-tail -20 logs/webhook_payloads.jsonl | python3 -c "
-import sys,json
-for l in sys.stdin:
-    d=json.loads(l); r=d.get('raw',d)
-    m=r.get('message',{}) or {}; t=(m.get('ticket',{}) or {})
-    c=(t.get('contact',{}) or {})
-    print(f\"{d['ts'][:19]} | {r.get('event','?'):20} | {c.get('number','?')[-4:]:4} | fromMe={m.get('fromMe','-')} | sendType={m.get('sendType','-')} | q={t.get('queueId','-')}\")
-"
-
-# Filtrar fromMe de um lead específico
-grep "PHONE_AQUI" logs/webhook_payloads.jsonl | python3 -c "
-import sys,json
-for l in sys.stdin:
-    d=json.loads(l); r=d.get('raw',d); m=r.get('message',{}) or {}
-    if m.get('fromMe'): print(json.dumps({'ts':d['ts'][:19],'sendType':m.get('sendType'),'userId':m.get('userId'),'body':(m.get('body') or '')[:80]},ensure_ascii=False))
-"
-```
-
-### Camada 4: Logs PM2 (efêmero — rotaciona)
-```bash
-# Erros recentes
-pm2 logs ana-langgraph --lines 100 --nostream 2>&1 | grep -i "error\|warning\|falha\|KILL\|PAUSAD"
-
-# Filtrar por lead
-pm2 logs ana-langgraph --lines 200 --nostream 2>&1 | grep "PHONE_AQUI"
-```
-
-### Alertas automáticos (WhatsApp pro admin)
-- **Hallucination:** Ana disse que fez mas não chamou tool → alerta imediato
-- **Gemini falhou:** 3 retries esgotados → alerta imediato
-- Admin phone: variável `ADMIN_PHONE` no .env
-
----
-
 ## Variáveis de Ambiente
 
 | Variável | Obrigatória | Uso |
@@ -409,41 +173,6 @@ pm2 logs ana-langgraph --lines 200 --nostream 2>&1 | grep "PHONE_AQUI"
 | **Canal** | Leadbox (mesmo tenant) | Leadbox (mesmo tenant 123) |
 
 > As duas NÃO podem receber webhooks ao mesmo tempo no Leadbox.
-> Para ativar a Ana LangGraph, configurar webhook do Leadbox para `https://ana.fazinzz.com/webhook/leadbox`.
-
----
-
-## Arrumação pós-sessão
-
-Ao final de cada sessão que modificou código ou resolveu bug, execute este checklist:
-
-### 1. MEMORY.md — registrar o que foi feito
-- Adicionar entrada no formato telegráfico (máx 3 linhas por item):
-  ```
-  ## [DD/MM/AAAA] Título curto
-  - O que quebrou → o que foi feito + arquivo modificado
-  ```
-- NUNCA escrever narrativa, investigação ou fontes de pesquisa — isso é git log
-- Se resolveu uma pendência, marcar `[x]` na seção Pendências
-
-### 2. CLAUDE.md — manter atualizado se houve mudança estrutural
-- Nova tool adicionada/removida → atualizar tabela "Tools"
-- Novo tipo de erro → atualizar "Diagnóstico de Produção"
-- Novo arquivo crítico → atualizar "Estrutura"
-- NÃO adicionar bugs resolvidos aqui — isso vai no MEMORY.md
-
-### 3. tests/INDICE.md — registrar testes novos
-- Novo `test_*.py` ou `run_*.py` → adicionar na tabela correspondente
-- Novo baseline em `tests/results/` → registrar com modelo e score
-
-### 4. Limpeza
-- Arquivos temporários (scripts inline, dumps, logs copiados) → deletar
-- NÃO deixar MDs soltos na raiz — se for referência, vai em `docs/`
-
-### 5. Auto-memory (quando aplicável)
-- Feedback do usuário (correção, preferência) → salvar em `/root/.claude/projects/.../memory/`
-- Decisão arquitetural importante → salvar como project memory
-- NÃO salvar coisas que o git log já tem
 
 ---
 
@@ -453,72 +182,18 @@ Ao final de cada sessão que modificou código ou resolveu bug, execute este che
 
 Google desliga `gemini-2.0-flash` em 01/06/2026. Modelo configurável via `GEMINI_MODEL` em `core/grafo.py` (default `gemini-2.0-flash`).
 
-**Regressões conhecidas do 2.5-flash** (testado 2026-04-10, 3 execuções):
+**Regressões conhecidas do 2.5-flash** (testado 2026-04-10):
 - **R2**: "quero falar com o financeiro" → 2.5 responde com template billing em vez de transferir
 - **R6**: "ar está fazendo barulho" em contexto manutenção → 2.5 responde com template em vez de transferir
 - **X4**: "quero falar com um atendente" → 2.5 não chama tool de transferência
 
-As 3 regressões são do mesmo padrão: o 2.5-flash ignora instrução de transferência imediata e responde com texto. Precisa ajustar prompt antes de migrar.
-
-**Antes de migrar:**
-1. Corrigir prompt para os 3 cenários acima
-2. Rodar suite completa 3x com `GEMINI_MODEL=gemini-2.5-flash` e comparar com baseline 2.0-flash
-3. Baseline de referência: `tests/results/all_20260410.json` (62/76 PASS com 2.0-flash)
-4. Resultados do 2.5-flash: `tests/results/all_25flash_run1.json` (60/76) e `all_25flash_run2.json` (63/76)
-
----
-
-## Onde colocar cada coisa
-
-| O que voce criou | Onde vai | Naming / Regra |
-|------------------|----------|----------------|
-| Teste unitario (pytest) | `tests/test_*.py` | `test_{modulo_testado}.py` |
-| Cenario E2E novo | Adicionar em `tests/cenarios.json` | Arquivo unico — NAO criar cenarios_*.json separados |
-| Runner E2E customizado | `tests/run_*.py` | `run_{tema}.py` |
-| Baseline de resultado | `tests/results/` | Nomeado com data: `all_YYYYMMDD.json` |
-| Documentacao tecnica | `docs/` | Nunca na raiz |
-| Script utilitario | `scripts/` | Descartavel apos uso → deletar |
-| Constante/ID novo | `core/constants.py` | Nunca hardcodar em outro arquivo |
-| Nova tool do LLM | `core/tools.py` | Na lista TOOLS do mesmo arquivo |
-| Regra de negocio / prompt | `core/prompts.py` | Nunca em `api/` ou `infra/` |
-| Novo handler webhook | `api/webhooks/leadbox.py` | Unico ponto de entrada webhook |
-| Novo tipo de incidente | `infra/incidentes.py` | Usar `registrar_incidente()` |
-| Novo job automatico | `jobs/{nome}_job.py` | Registrar no PM2 ecosystem |
-| Logica de deteccao | `core/hallucination.py` | Pos-resposta: texto vs tools |
-| Contexto de disparo | `core/context_detector.py` | billing ou manutencao |
-| Logica de snooze | `core/auto_snooze.py` | Fallback 48h se Gemini nao chamar tool |
-| Logica de buffer | `infra/buffer.py` | Cap 20 msgs, delay 9s |
-| Logica de Redis | `infra/redis.py` | Locks, pausa, markers, snooze |
-| Logica de Supabase | `infra/supabase.py` + `infra/nodes_supabase.py` | supabase.py = client, nodes = historico/persistencia |
-| Envio para Leadbox | `infra/leadbox_client.py` | Unico ponto de envio — NAO criar outro |
-| Retry/resilencia | `infra/retry.py` | Retry exponencial com backoff |
-
-### Proibido
-
-- **NUNCA criar .md na raiz** — doc vai em `docs/`, memoria vai no MEMORY.md
-- **NUNCA criar script inline** para teste — usar `simulate.py` oficial ou pytest
-- **NUNCA criar arquivo em `core/`** sem necessidade real — 7 arquivos, manter enxuto
-- **NUNCA deixar report/dump solto** — baselines em `tests/results/`, deletar o resto
-- **NUNCA hardcodar ID** de fila, tenant, usuario — tudo em `core/constants.py`
-- **NUNCA colocar logica de negocio em `api/` ou `infra/`** — `api/` so recebe e roteia, `infra/` so conecta
-- **NUNCA criar novo ponto de envio para Leadbox** — usar `infra/leadbox_client.py` + chamar `_mark_sent_by_ia`
-- **NUNCA duplicar client Supabase** — tools usam `_get_supabase()` propria, infra usa `infra/supabase.py`
-- **NUNCA colocar logica de negocio em `api/` ou `infra/`** — `api/` so recebe e roteia, `infra/` so conecta
-
-### Antes de criar qualquer arquivo
-
-1. Perguntar: ja existe um lugar para isso? (provavelmente sim)
-2. Se for cenario E2E: adicionar em `tests/cenarios.json` (NAO criar arquivo novo)
-3. Se for teste unitario: `tests/test_{modulo}.py`
-4. Se for doc: vai em `docs/`
-5. Se for temporario: deletar quando terminar
-6. Registrar em `tests/INDICE.md` se criou teste novo
+**Antes de migrar:** corrigir prompt → rodar suite 3x com `GEMINI_MODEL=gemini-2.5-flash` → comparar com baseline `tests/results/all_20260410.json` (62/76 PASS com 2.0-flash)
 
 ---
 
 ## Regras
 
-- Código enxuto — 30 arquivos Python (ver contagem na seção Estrutura)
+- Código enxuto — 30 arquivos Python
 - Uma tabela só (`ana_leads`) com histórico inline
 - IDs de filas/usuários vivem em **2 lugares**: `core/prompts.py` E na docstring de `transferir_departamento` em `core/tools.py`. **Atualizar AMBOS** ao mudar IDs
 - Sem multi-tenant — single agent, single table
@@ -536,9 +211,9 @@ As 3 regressões são do mesmo padrão: o 2.5-flash ignora instrução de transf
 2. **`enviar_resposta_leadbox` vive em `infra/leadbox_client.py`** (não em `api/webhooks/leadbox.py`). Importar de `infra.leadbox_client`. O webhook re-importa de lá.
 3. **`billing_job.py` e `manutencao_job.py` importam `enviar_resposta_leadbox` de `infra/leadbox_client.py`.** Jobs enviam mensagens pela mesma função do webhook.
 4. **`_context_extra` em `grafo.py` é um dict global.** Preenchido em `processar_mensagens()`, lido em `call_model()`. Funciona porque cada chamada é por lead (sequencial via lock Redis).
-5. **fromMe: NUNCA usar fila (queueId) para diferenciar IA de humano.** Usar `sendType` do payload: `"API"` = IA, qualquer outro = humano. Marker Redis é camada 1 (TTL 15s). Bug real: check `IA_QUEUES` ignorava humanos nas filas 544/545.
-6. **Todos os 6 pontos que enviam para Leadbox DEVEM gravar marker Redis** (`_mark_sent_by_ia`). Se adicionar novo ponto de envio, chamar `_mark_sent_by_ia(phone)` após POST. Pontos: `enviar_resposta_leadbox`, `transferir_departamento`, fallback, alerta admin, billing, manutenção.
-7. **`MAX_TOOL_ROUNDS` conta só após último HumanMessage** (desta invocação). Não contar histórico antigo — inflaria o counter e encerraria prematuramente.
+5. **fromMe: NUNCA usar fila (queueId) para diferenciar IA de humano.** Usar `sendType` do payload: `"API"` = IA, qualquer outro = humano. Marker Redis é camada 1 (TTL 15s).
+6. **Todos os 6 pontos que enviam para Leadbox DEVEM gravar marker Redis** (`_mark_sent_by_ia`).
+7. **`MAX_TOOL_ROUNDS` conta só após último HumanMessage** (desta invocação). Não contar histórico antigo.
 
 ---
 
@@ -555,6 +230,9 @@ As 3 regressões são do mesmo padrão: o 2.5-flash ignora instrução de transf
 - Ticket fechado: confiar apenas em `event=FinishedTicket` ou `ticket.status=closed`
 - `UpdateOnTicket` com `queue_id=None` **NÃO** significa ticket fechado (é disparo genérico)
 - Token usa query param `?token=JWT`, não header Bearer
-- **fromMe detection (3 camadas):** (1) marker Redis `sent:ia:{agent_id}:{phone}` (TTL 15s) → IA. (2) `message.sendType == "API"` → IA (fallback se marker expirou). (3) Qualquer outro → humano → PAUSAR IA.
-- **sendType valores conhecidos:** `"API"` = enviado pela API (IA), `"chat"` = enviado pelo painel (humano), `None` = ambíguo (tratar como humano)
-- **Payloads capturados:** `logs/webhook_payloads.jsonl` — todos os webhooks raw, antes de qualquer filtro. Manter ativo.
+- **fromMe detection (3 camadas):** (1) marker Redis `sent:ia:{agent_id}:{phone}` (TTL 15s) → IA. (2) `message.sendType == "API"` → IA. (3) Qualquer outro → humano → PAUSAR IA.
+- **Payloads capturados:** `logs/webhook_payloads.jsonl` — todos os webhooks raw.
+
+---
+
+*Organização do projeto: ver `.claude/GOVERNANCE.md` | Fluxo de mensagem: ver `docs/FLUXO_MENSAGEM.md`*
