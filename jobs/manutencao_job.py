@@ -200,6 +200,16 @@ async def _processar_notificacao(item: dict, redis) -> bool:
         from infra.nodes_supabase import upsert_lead
         lead_id = upsert_lead(clean_phone)
         if lead_id:
+            init_history = {"messages": [{
+                "role": "user",
+                "content": "Oi",
+                "timestamp": now,
+            }]}
+            supabase.table(TABLE_LEADS).update({
+                "conversation_history": init_history,
+                "updated_at": now,
+            }).eq("id", lead_id).execute()
+
             result = supabase.table(TABLE_LEADS).select(
                 "id, conversation_history"
             ).eq("id", lead_id).limit(1).execute()
