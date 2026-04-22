@@ -31,13 +31,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TEMPLATE = (
+# Template oficial WhatsApp (nome no Leadbox/Meta)
+WHATSAPP_TEMPLATE = "manutencao"  # 3 params: {{1}}=nome, {{2}}=equipamento, {{3}}=endereço
+
+# Texto legível para salvar no histórico (conversation_history) — não enviado ao WhatsApp
+TEMPLATE_HISTORICO = (
     "Olá, {nome}!\n\n"
-    "Está chegando a hora da manutenção preventiva do seu ar-condicionado!\n\n"
-    "*Equipamento:* {equipamento}\n"
-    "*Endereço:* {endereco}\n\n"
-    "A manutenção é gratuita e está inclusa no seu contrato.\n\n"
-    "Quer agendar? Me fala um dia e horário de preferência!"
+    "Está chegando a hora da manutenção preventiva do seu ar-condicionado.\n\n"
+    "Equipamento: {equipamento}\n"
+    "Endereço: {endereco}\n\n"
+    "A manutenção é gratuita e já está inclusa no seu contrato. "
+    "Quer agendar? Me responde com um dia e horário de preferência."
 )
 
 
@@ -95,10 +99,15 @@ def buscar_contratos_d7(hoje: date) -> list:
                 equipamento_str = "Ar-condicionado"
 
             nome = contrato.get("locatario_nome", "Cliente")
+            primeiro_nome = nome.split()[0] if nome else "Cliente"
             endereco = contrato.get("endereco_instalacao", "Endereço não informado")
 
-            message = TEMPLATE.format(
-                nome=nome.split()[0] if nome else "Cliente",  # Primeiro nome
+            # Params na ordem do template Meta: {{1}}=nome, {{2}}=equipamento, {{3}}=endereço
+            template_params = [primeiro_nome, equipamento_str, endereco]
+
+            # Texto legível para histórico interno (não enviado ao WhatsApp)
+            message = TEMPLATE_HISTORICO.format(
+                nome=primeiro_nome,
                 equipamento=equipamento_str,
                 endereco=endereco,
             )
@@ -108,6 +117,8 @@ def buscar_contratos_d7(hoje: date) -> list:
                 "message": message,
                 "contract_id": contrato["id"],
                 "context_type": "manutencao_preventiva",
+                "template_params": template_params,
+                "nome": nome,
             })
 
         return elegiveis
@@ -125,6 +136,12 @@ async def run_manutencao():
     weekday = hoje.weekday()
     if weekday >= 5:
         logger.info("[MANUTENCAO] Fim de semana, pulando")
+        return
+
+    from core.feriados import eh_feriado
+    feriado = eh_feriado(hoje)
+    if feriado:
+        logger.info(f"[MANUTENCAO] Feriado ({feriado}), pulando")
         return
 
     redis = await get_redis_service()
@@ -198,7 +215,7 @@ async def _processar_notificacao(item: dict, redis) -> bool:
 
     if not lead:
         from infra.nodes_supabase import upsert_lead
-        lead_id = upsert_lead(clean_phone)
+        lead_id = upsert_lead(clean_phone, nome=item.get("nome"))
         if lead_id:
             init_history = {"messages": [{
                 "role": "user",
@@ -244,14 +261,17 @@ async def _processar_notificacao(item: dict, redis) -> bool:
     except Exception as e:
         logger.warning(f"[MANUTENCAO:{phone}] Erro ao marcar contrato: {e}")
 
-    # Enviar via Leadbox
-    from infra.leadbox_client import enviar_resposta_leadbox
+    # Enviar template via Leadbox (1 POST: Leadbox → Meta → WhatsApp)
+    from infra.leadbox_client import enviar_template_leadbox
 
     tel_envio = clean_phone if clean_phone.startswith("55") else f"55{clean_phone}"
 
     from core.constants import QUEUE_MANUTENCAO, USER_IA
-    if not enviar_resposta_leadbox(tel_envio, message, raw=True, queue_id=QUEUE_MANUTENCAO, user_id=USER_IA):
-        logger.error(f"[MANUTENCAO:{phone}] Leadbox erro ao enviar")
+    if not enviar_template_leadbox(
+        tel_envio, WHATSAPP_TEMPLATE, item["template_params"],
+        queue_id=QUEUE_MANUTENCAO, user_id=USER_IA,
+    ):
+        logger.error(f"[MANUTENCAO:{phone}] Leadbox erro ao enviar template")
         await redis.client.set(dedup_key, "1", ex=86400)
         return False
 

@@ -61,7 +61,9 @@ TEMPLATES_HISTORICO = {
 
 
 def count_business_days(from_date: date, to_date: date) -> int:
-    """Conta dias úteis entre duas datas (sem feriados)."""
+    """Conta dias úteis entre duas datas (descontando feriados)."""
+    from core.feriados import eh_feriado
+
     if from_date == to_date:
         return 0
     sign = 1 if to_date > from_date else -1
@@ -70,7 +72,7 @@ def count_business_days(from_date: date, to_date: date) -> int:
     count = 0
     current = start + timedelta(days=1)
     while current <= end:
-        if current.weekday() < 5:  # seg-sex
+        if current.weekday() < 5 and not eh_feriado(current):
             count += 1
         current += timedelta(days=1)
     return count * sign
@@ -152,6 +154,7 @@ def buscar_elegiveis(hoje: date) -> list:
                 "template_params": [nome, valor, vencimento, link],
                 "template_key": template_key,
                 "offset": offset,
+                "nome": nome,
             })
 
         return elegiveis
@@ -169,6 +172,12 @@ async def run_billing():
     weekday = hoje.weekday()
     if weekday >= 5:  # sáb/dom
         logger.info("[BILLING] Fim de semana, pulando")
+        return
+
+    from core.feriados import eh_feriado
+    feriado = eh_feriado(hoje)
+    if feriado:
+        logger.info(f"[BILLING] Feriado ({feriado}), pulando")
         return
 
     redis = await get_redis_service()
@@ -276,7 +285,7 @@ async def _processar_disparo(item: dict, redis) -> bool:
     if not lead:
         # Criar lead se não existe
         from infra.nodes_supabase import upsert_lead
-        lead_id = upsert_lead(clean_phone)
+        lead_id = upsert_lead(clean_phone, nome=item.get("nome"))
         if lead_id:
             result = supabase.table(TABLE_LEADS).select(
                 "id, conversation_history"
