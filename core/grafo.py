@@ -278,9 +278,12 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     # 3. Buscar histórico
     historico = buscar_historico(phone, limite=20)
 
-    # 4. Salvar mensagem do usuário (texto, sem base64)
+    # 4. Salvar mensagem do usuário (texto ou marcador de mídia)
     if texto:
         salvar_mensagem(phone, texto, "incoming")
+    elif has_media:
+        media_label = "[Imagem enviada]" if imagem_base64 else "[Áudio enviado]" if audio_base64 else f"[Documento: {documento_nome}]"
+        salvar_mensagem(phone, media_label, "incoming")
 
     # 5. Detectar contexto (billing/manutenção) — 1x por mensagem, não por iteração
     try:

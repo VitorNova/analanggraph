@@ -179,6 +179,12 @@ def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
                 removed = validated.pop()
                 logger.warning(f"[PERSISTENCIA:{telefone}] Removida mensagem órfã no final: {type(removed).__name__}")
 
+        # Gemini exige que AIMessage (especialmente com tool_calls) seja precedida
+        # por HumanMessage. Se histórico começa com AIMessage, remover até achar HumanMessage.
+        while validated and isinstance(validated[0], AIMessage):
+            removed = validated.pop(0)
+            logger.warning(f"[PERSISTENCIA:{telefone}] Removida AIMessage inicial sem HumanMessage precedente")
+
         return validated
     except Exception as e:
         logger.error(f"[PERSISTENCIA] Erro buscar_historico: {e}", exc_info=True)
