@@ -99,12 +99,10 @@ class RedisService:
 
     # ── Pausa ──
 
-    async def pause_set(self, phone: str, ttl: Optional[int] = None):
+    async def pause_set(self, phone: str, ttl: int = 86400):
         key = self._pause_key(phone)
-        await self.client.set(key, "1")
-        if ttl:
-            await self.client.expire(key, ttl)
-        logger.info(f"[REDIS] Pausado: {phone}")
+        await self.client.set(key, "1", ex=ttl)
+        logger.info(f"[REDIS] Pausado: {phone} (TTL={ttl}s)")
 
     async def pause_clear(self, phone: str) -> bool:
         deleted = await self.client.delete(self._pause_key(phone))

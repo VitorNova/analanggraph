@@ -23,7 +23,8 @@ import httpx
 from fastapi import APIRouter, Request
 
 from core.constants import (
-    TABLE_LEADS, TENANT_ID, IA_QUEUES, QUEUE_IA,
+    TABLE_LEADS, TENANT_ID, IA_QUEUES, QUEUE_IA, USER_IA,
+    LEADBOX_API_TOKEN,
 )
 from infra.redis import get_redis_service
 from infra.supabase import get_supabase
@@ -72,6 +73,69 @@ async def handle_new_message(phone: str, texto: str, nome: str, ticket_id,
     """Mensagem do cliente via Leadbox → buffer → grafo."""
     if not texto and not media_url:
         return {"status": "ignored", "reason": "empty_text_no_media"}
+
+    # Comando R/ ou /R → reset completo: zera histórico + realoca para IA
+    if texto and texto.strip().upper() in ("R/", "/R"):
+        supabase = get_supabase()
+        redis = await get_redis_service()
+
+        # 1. Reset Supabase: histórico + estado + pausa + snooze
+        if supabase:
+            try:
+                supabase.table(TABLE_LEADS).update({
+                    "conversation_history": {"messages": []},
+                    "current_queue_id": QUEUE_IA,
+                    "current_user_id": USER_IA,
+                    "current_state": "ai",
+                    "paused_at": None,
+                    "paused_by": None,
+                    "responsavel": "AI",
+                    "ticket_id": None,
+                    "billing_snooze_until": None,
+                }).eq("telefone", phone).execute()
+                logger.info(f"[LEADBOX:{phone}] Comando /R → reset completo no Supabase")
+            except Exception as e:
+                logger.error(f"[LEADBOX:{phone}] Erro ao resetar lead: {e}", exc_info=True)
+                from infra.incidentes import registrar_incidente
+                registrar_incidente(phone, "lead_reset_erro", str(e)[:300])
+
+        # 2. Redis: limpar pausa + snooze + buffer
+        await redis.pause_clear(phone)
+        await redis.buffer_clear(phone)
+        try:
+            # Limpar snooze billing manualmente (não há método delete genérico)
+            snooze_key = f"snooze:billing:{os.environ.get('AGENT_ID', 'ana-langgraph')}:{phone}"
+            await redis.client.delete(snooze_key)
+        except Exception as e:
+            logger.warning(f"[LEADBOX:{phone}] Falha ao limpar snooze Redis: {e}")
+
+        # 3. Leadbox: realocar ticket para fila IA (POST silencioso sem body)
+        from infra.leadbox_client import LEADBOX_EXTERNAL_URL, _mark_sent_by_ia
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.post(
+                    LEADBOX_EXTERNAL_URL,
+                    params={"token": LEADBOX_API_TOKEN},
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "number": phone,
+                        "externalKey": phone,
+                        "queueId": QUEUE_IA,
+                        "userId": USER_IA,
+                        "forceTicketToDepartment": True,
+                        "forceTicketToUser": True,
+                    },
+                )
+                resp.raise_for_status()
+                _mark_sent_by_ia(phone)
+                logger.info(f"[LEADBOX:{phone}] Comando /R → ticket realocado para fila IA")
+        except Exception as e:
+            logger.error(f"[LEADBOX:{phone}] Erro ao realocar ticket no Leadbox: {e}", exc_info=True)
+            from infra.incidentes import registrar_incidente
+            registrar_incidente(phone, "reset_leadbox_erro", str(e)[:300])
+
+        log_event("full_reset", phone, reason="comando_/R")
+        return {"status": "ok", "event": "full_reset"}
 
     from infra.buffer import get_message_buffer
     from infra.nodes_supabase import upsert_lead
@@ -174,8 +238,7 @@ async def handle_queue_change(phone: str, queue_id: int, user_id, ticket_id):
     }
 
     if queue_id in IA_QUEUES:
-        # Fila IA → despausar, MAS respeitar pausa por humano (fromMe)
-        # UpdateOnTicket na mesma fila IA NÃO deve anular pausa de humano
+        # Fila IA → despausar, MAS respeitar pausa por humano (fromMe ou transfer)
         try:
             lead_row = supabase.table(TABLE_LEADS).select(
                 "paused_by"
@@ -185,12 +248,17 @@ async def handle_queue_change(phone: str, queue_id: int, user_id, ticket_id):
             logger.warning(f"[LEADBOX:{phone}] Falha ao checar paused_by: {e}")
             paused_by = ""
 
-        if paused_by == "human_fromMe":
+        # FIX-02: user humano em fila IA = transferência para humano → PAUSAR
+        if user_id and int(user_id) != USER_IA:
+            update_data["current_state"] = "human"
+            update_data["paused_at"] = now
+            update_data["paused_by"] = f"transfer_to_human_{user_id}"
+            update_data["responsavel"] = "Humano"
+            await redis.pause_set(phone)
+            logger.info(f"[LEADBOX:{phone}] Fila IA ({queue_id}) user humano ({user_id}) → PAUSADO")
+            log_event("paused", phone, queue_id=queue_id, user_id=user_id, reason="human_in_ia_queue")
+        elif paused_by == "human_fromMe":
             logger.info(f"[LEADBOX:{phone}] Fila IA ({queue_id}) mas paused_by=human_fromMe → mantém pausado")
-            # Atualizar apenas metadata (queue/ticket), não mexer na pausa
-            update_data["current_queue_id"] = queue_id
-            update_data["current_user_id"] = user_id
-            update_data["ticket_id"] = ticket_id
         else:
             update_data["current_state"] = "ai"
             update_data["paused_at"] = None

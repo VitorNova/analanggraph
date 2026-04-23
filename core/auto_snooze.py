@@ -13,17 +13,17 @@ from langchain_core.messages import AIMessage
 logger = logging.getLogger(__name__)
 
 
-async def auto_snooze_billing(phone: str, ctx_extra: str, novas_mensagens: list, redis_service) -> None:
+async def auto_snooze_billing(phone: str, context_type: str, novas_mensagens: list, redis_service) -> None:
     """
-    Aplica auto-snooze billing 48h se contexto é COBRANCA e Ana não agiu.
+    Aplica auto-snooze billing 48h se contexto é billing e Ana não agiu.
 
     Args:
         phone: Telefone do lead
-        ctx_extra: String de contexto extra (contém "COBRANCA" se billing)
+        context_type: Tipo de contexto ("billing", "manutencao", ou None)
         novas_mensagens: Mensagens novas do resultado do graph
         redis_service: Instância do RedisService
     """
-    if "COBRANÇA" not in ctx_extra:
+    if context_type != "billing":
         return
 
     has_transfer = any(

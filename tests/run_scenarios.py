@@ -178,7 +178,7 @@ async def run_cenario(cenario: dict) -> dict:
         try:
             from core.context_detector import build_context_prompt
             ctx_prompt = build_context_prompt(cenario["context"])
-            _context_extra[test_phone] = ctx_prompt
+            _context_extra[test_phone] = {"type": cenario["context"], "prompt": ctx_prompt}
             result["flow"].append({
                 "node": "2_CONTEXT_INJECTION",
                 "type": "context",

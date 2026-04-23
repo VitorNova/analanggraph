@@ -21,9 +21,21 @@ AGENT_NAME = "Ana"
 # Pool Redis sync compartilhado (singleton)
 _sync_pool = None
 
-# Cache de credenciais Meta (preenchido em _get_meta_credentials)
-_meta_token = None
-_meta_phone_id = None
+# Mapeamento: nome do template → hsmId (ID na Meta)
+# Usado por enviar_template_leadbox para enviar via Leadbox com template oficial
+TEMPLATE_HSM_IDS = {
+    "diavencimento": "1307792311201097",
+    "cobranca": "1933898480565060",
+    "diadovencimento": "1630599891513327",
+    "15diasdeatraso": "936264969272307",
+    "venceu1": "1619879289089264",
+    "manutencao": "947986774486046",
+    "inicial": "909981968711180",
+    "pagamentoaprovado": "949538204672996",
+    "reengajamento": "2703896383317249",
+    "tielifinanceiro": "2982590331937548",
+    "osalugaar": "1650967356237373",
+}
 
 
 def _get_sync_redis() -> sync_redis.Redis:
@@ -35,6 +47,18 @@ def _get_sync_redis() -> sync_redis.Redis:
             decode_responses=True,
         )
     return _sync_pool
+
+
+# Pool HTTP sync compartilhado (singleton)
+_http_client: httpx.Client = None
+
+
+def _get_http_client() -> httpx.Client:
+    """Retorna client HTTP sync singleton (connection pooling)."""
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.Client(timeout=15)
+    return _http_client
 
 
 def enviar_resposta_leadbox(phone: str, mensagem: str, raw: bool = False,
@@ -70,45 +94,23 @@ def enviar_resposta_leadbox(phone: str, mensagem: str, raw: bool = False,
         payload["forceTicketToUser"] = True
 
     try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.post(
-                LEADBOX_EXTERNAL_URL,
-                params={"token": LEADBOX_API_TOKEN},
-                headers={"Content-Type": "application/json"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            logger.info("[LEADBOX] Resposta enviada para %s", phone)
-            # Marker para ignorar eco fromMe (webhook volta com a msg da IA)
-            _mark_sent_by_ia(phone)
-            return True
+        client = _get_http_client()
+        resp = client.post(
+            LEADBOX_EXTERNAL_URL,
+            params={"token": LEADBOX_API_TOKEN},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        logger.info("[LEADBOX] Resposta enviada para %s", phone)
+        _mark_sent_by_ia(phone)
+        return True
     except Exception as e:
         logger.error("[LEADBOX] Erro ao enviar resposta para %s: %s", phone, e, exc_info=True)
         from infra.incidentes import registrar_incidente
         registrar_incidente(phone, "envio_falhou", str(e)[:300], {"payload_size": len(mensagem)})
         return False
 
-
-
-def _get_meta_credentials() -> tuple[str, str]:
-    """Busca token Meta e phone_id do Leadbox (cacheado em módulo)."""
-    global _meta_token, _meta_phone_id
-    if _meta_token and _meta_phone_id:
-        return _meta_token, _meta_phone_id
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.get(
-                f"{LEADBOX_API_URL}/whatsapp/430",
-                headers={"Authorization": f"Bearer {LEADBOX_API_TOKEN}"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            _meta_token = data["tokenAPI"]
-            _meta_phone_id = data["phoneId"]
-            return _meta_token, _meta_phone_id
-    except Exception as e:
-        logger.error(f"[META] Falha ao buscar credenciais Meta: {e}")
-        return "", ""
 
 
 def enviar_template_leadbox(
@@ -119,92 +121,60 @@ def enviar_template_leadbox(
     queue_id: int = None,
     user_id: int = None,
 ) -> bool:
-    """Envia template oficial do WhatsApp via Meta Cloud API + registra no Leadbox.
+    """Envia template oficial do WhatsApp via Leadbox (1 POST só).
 
-    Dois passos:
-    1. Meta Cloud API envia o template (entrega garantida fora da janela 24h)
-    2. Leadbox POST PUSH registra o texto no CRM e move o ticket para a fila
+    O Leadbox recebe o hsmId + params, chama a Meta Cloud API internamente,
+    entrega no WhatsApp e registra no CRM automaticamente.
 
     Args:
         phone: Telefone do destinatário (com DDI, ex: '5566999990000').
         template_id: Nome do template aprovado no WhatsApp (ex: 'cobranca').
         params: Lista de parâmetros na ordem do template ({{1}}, {{2}}, ...).
-        body_texto: Texto legível para registrar no Leadbox (aparece na conversa).
+        body_texto: (ignorado — Leadbox monta o body a partir do template).
         queue_id: Fila destino no Leadbox (ex: 544 para billing).
         user_id: Usuário destino no Leadbox (ex: 1095 para IA billing).
     """
-    # --- Passo 1: Enviar template via Meta Cloud API ---
-    meta_token, phone_id = _get_meta_credentials()
-    if not meta_token:
-        logger.error("[META] Sem credenciais Meta, não pode enviar template")
+    if not LEADBOX_API_TOKEN:
+        logger.warning("[LEADBOX] LEADBOX_API_TOKEN não configurado, pulando envio")
         return False
 
-    parameters = [{"type": "text", "text": p} for p in params]
+    hsm_id = TEMPLATE_HSM_IDS.get(template_id)
+    if not hsm_id:
+        logger.error(f"[LEADBOX] Template '{template_id}' não encontrado em TEMPLATE_HSM_IDS")
+        return False
 
-    meta_payload = {
-        "messaging_product": "whatsapp",
-        "to": phone,
-        "type": "template",
-        "template": {
-            "name": template_id,
-            "language": {"code": "pt_BR"},
-            "components": [
-                {"type": "body", "parameters": parameters}
-            ],
-        },
+    payload = {
+        "number": phone,
+        "externalKey": phone,
+        "body": "",
+        "templateId": hsm_id,
+        "typeTemplate": "template",
+        "params": [str(p) for p in params],
     }
+    if queue_id is not None:
+        payload["queueId"] = queue_id
+        payload["forceTicketToDepartment"] = True
+    if user_id is not None:
+        payload["userId"] = user_id
+        payload["forceTicketToUser"] = True
 
     try:
-        with httpx.Client(timeout=15) as client:
-            resp = client.post(
-                f"https://graph.facebook.com/v19.0/{phone_id}/messages",
-                headers={
-                    "Authorization": f"Bearer {meta_token}",
-                    "Content-Type": "application/json",
-                },
-                json=meta_payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            msg_id = (data.get("messages") or [{}])[0].get("id", "?")
-            logger.info(f"[META] Template '{template_id}' enviado para {phone} (wamid={msg_id})")
-            _mark_sent_by_ia(phone)
+        client = _get_http_client()
+        resp = client.post(
+            LEADBOX_EXTERNAL_URL,
+            params={"token": LEADBOX_API_TOKEN},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        logger.info(f"[LEADBOX] Template '{template_id}' (hsm={hsm_id}) enviado para {phone}")
+        _mark_sent_by_ia(phone)
+        return True
     except Exception as e:
-        logger.error(f"[META] Erro ao enviar template '{template_id}' para {phone}: {e}", exc_info=True)
+        logger.error(f"[LEADBOX] Erro ao enviar template '{template_id}' para {phone}: {e}", exc_info=True)
         from infra.incidentes import registrar_incidente
-        registrar_incidente(phone, "envio_falhou", str(e)[:300], {"template_id": template_id})
+        registrar_incidente(phone, "envio_falhou", str(e)[:300], {"template_id": template_id, "hsm_id": hsm_id})
         return False
-
-    # --- Passo 2: Registrar no Leadbox (CRM tracking + mover fila) ---
-    if body_texto or queue_id:
-        leadbox_payload = {
-            "number": phone,
-            "externalKey": phone,
-            "body": body_texto,
-        }
-        if queue_id:
-            leadbox_payload["queueId"] = queue_id
-            leadbox_payload["forceTicketToDepartment"] = True
-        if user_id:
-            leadbox_payload["userId"] = user_id
-            leadbox_payload["forceTicketToUser"] = True
-
-        try:
-            with httpx.Client(timeout=15) as client:
-                resp = client.post(
-                    LEADBOX_EXTERNAL_URL,
-                    params={"token": LEADBOX_API_TOKEN},
-                    headers={"Content-Type": "application/json"},
-                    json=leadbox_payload,
-                )
-                resp.raise_for_status()
-                logger.info(f"[LEADBOX] Registrado no CRM: {phone} → fila {queue_id}")
-                _mark_sent_by_ia(phone)
-        except Exception as e:
-            # Template já foi enviado via Meta — só falhou o registro no Leadbox
-            logger.warning(f"[LEADBOX] Falha ao registrar no CRM para {phone}: {e}")
-
-    return True
 
 
 def _mark_sent_by_ia(phone: str):

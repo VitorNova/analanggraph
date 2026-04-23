@@ -25,3 +25,13 @@ QUEUE_BILLING = 544
 QUEUE_MANUTENCAO = 545
 IA_QUEUES = {QUEUE_IA, QUEUE_BILLING, QUEUE_MANUTENCAO}
 USER_IA = 1095  # Usuário "Ana" no Leadbox
+
+# ── Filas e atendentes humanos ──
+QUEUE_ATENDIMENTO = 453
+QUEUE_FINANCEIRO = 454
+USER_NATHALIA = 815
+USER_LAZARO = 813
+USER_TIELI = 814
+
+# ── Mensagem de fallback ──
+FALLBACK_MSG = "Desculpe, ocorreu um erro interno. Por favor, tente novamente em alguns instantes."

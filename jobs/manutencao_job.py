@@ -219,7 +219,7 @@ async def _processar_notificacao(item: dict, redis) -> bool:
         if lead_id:
             init_history = {"messages": [{
                 "role": "user",
-                "content": "Oi",
+                "content": f"[Notificação de manutenção preventiva recebida - contrato {contract_id}]",
                 "timestamp": now,
             }]}
             supabase.table(TABLE_LEADS).update({

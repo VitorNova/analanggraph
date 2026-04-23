@@ -24,20 +24,11 @@ from typing_extensions import Annotated
 import httpx
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
-from supabase import create_client
 
 logger = logging.getLogger(__name__)
 
 # Tabela de leads no Supabase
 TABLE_LEADS = "ana_leads"
-
-
-def _get_supabase():
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        return None
-    return create_client(url, key)
 
 
 # =============================================================================
@@ -116,7 +107,8 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
     Returns:
         Dados do cliente formatados: nome, CPF, cobranças pendentes com links de boleto/pix, contratos ativos com quantidade de ares. Ou mensagem de erro se não encontrar.
     """
-    supabase = _get_supabase()
+    from infra.supabase import get_supabase
+    supabase = get_supabase()
     if not supabase:
         logger.error("[TOOL] Supabase indisponível")
         return "Erro: sistema temporariamente indisponível. Tente novamente em alguns minutos."
@@ -175,12 +167,21 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
             return "Não encontrei seu cadastro pelo telefone. Pode me informar seu CPF ou CNPJ?"
         return "Para localizar seu cadastro, preciso do seu CPF ou CNPJ."
 
-    # 4. Busca cobranças pendentes
-    cobrancas = supabase.table("asaas_cobrancas").select(
+    # 4. Busca cobranças: OVERDUE (todas) + PENDING apenas vencendo até hoje
+    hoje_iso = date.today().isoformat()
+    cobrancas_overdue = supabase.table("asaas_cobrancas").select(
         "id, value, due_date, status, invoice_url"
-    ).eq("customer_id", customer_id).in_(
-        "status", ["PENDING", "OVERDUE"]
+    ).eq("customer_id", customer_id).eq(
+        "status", "OVERDUE"
     ).is_("deleted_at", "null").order("due_date").limit(10).execute()
+
+    cobrancas_pending = supabase.table("asaas_cobrancas").select(
+        "id, value, due_date, status, invoice_url"
+    ).eq("customer_id", customer_id).eq(
+        "status", "PENDING"
+    ).lte("due_date", hoje_iso).is_("deleted_at", "null").order("due_date").limit(10).execute()
+
+    cobrancas_data = (cobrancas_overdue.data or []) + (cobrancas_pending.data or [])
 
     # 5. Busca contratos ativos
     contratos = supabase.table("asaas_contratos").select(
@@ -193,7 +194,7 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
     resp += f"CPF/CNPJ: {customer_data.get('cpf_cnpj', 'Não informado')}\n\n"
 
     # Cobranças
-    cobs = cobrancas.data or []
+    cobs = cobrancas_data
     if cobs:
         resp += f"COBRANÇAS PENDENTES ({len(cobs)}):\n"
         for c in cobs:
@@ -317,21 +318,32 @@ QUANDO USAR:
     try:
         push_url = f"{LEADBOX_URL}/v1/api/external/{LEADBOX_UUID}/?token={LEADBOX_TOKEN}"
 
-        with httpx.Client(timeout=15) as client:
-            resp = client.post(
-                push_url,
-                headers={"Content-Type": "application/json"},
-                json={
-                    "number": telefone_limpo,
-                    "externalKey": telefone_limpo,
-                    # SEM "body" = transferência 100% silenciosa
-                    "queueId": queue_id,
-                    "userId": user_id,
-                    "forceTicketToDepartment": True,
-                    "forceTicketToUser": True,
-                },
-            )
-            resp.raise_for_status()
+        from infra.leadbox_client import _get_http_client
+        client = _get_http_client()
+        resp = client.post(
+            push_url,
+            headers={"Content-Type": "application/json"},
+            json={
+                "number": telefone_limpo,
+                "externalKey": telefone_limpo,
+                # SEM "body" = transferência 100% silenciosa
+                "queueId": queue_id,
+                "userId": user_id,
+                "forceTicketToDepartment": True,
+                "forceTicketToUser": True,
+            },
+        )
+        resp.raise_for_status()
+
+        # Pausar IA imediatamente (não esperar webhook QueueChange — race condition)
+        try:
+            from infra.leadbox_client import _get_sync_redis
+            r = _get_sync_redis()
+            agent_id = os.environ.get("AGENT_ID", "ana-langgraph")
+            r.set(f"pause:{agent_id}:{telefone_limpo}", "1", ex=86400)
+            logger.info(f"[TOOL] Pausa setada: {phone} → {destino_nome}")
+        except Exception as e:
+            logger.warning(f"[TOOL] Falha ao pausar após transfer: {e}")
 
         # Marker anti-eco: sinaliza que este fromMe é da IA
         from infra.leadbox_client import _mark_sent_by_ia
@@ -442,7 +454,8 @@ Exemplo 5: Cliente diz "vou tentar pagar" (sem data específica)
         return f"Data muito distante ({data_prometida} = {dias} dias). Máximo permitido: 30 dias. Pergunte uma data mais próxima."
 
     # Salva no Supabase
-    supabase = _get_supabase()
+    from infra.supabase import get_supabase
+    supabase = get_supabase()
     if supabase and phone:
         try:
             phone_clean = re.sub(r'\D', '', phone)
@@ -450,6 +463,18 @@ Exemplo 5: Cliente diz "vou tentar pagar" (sem data específica)
                 "billing_snooze_until": data_prometida,
             }).eq("telefone", phone_clean).execute()
             logger.info(f"[TOOL] Compromisso registrado: {phone} → {data_prometida} ({dias} dias)")
+
+            # Gravar snooze no Redis (billing_job checa Redis primeiro)
+            try:
+                from infra.leadbox_client import _get_sync_redis
+                r = _get_sync_redis()
+                ttl_seconds = max((dias + 1) * 86400, 86400)
+                agent_id = os.environ.get("AGENT_ID", "ana-langgraph")
+                r.set(f"snooze:billing:{agent_id}:{phone_clean}", data_prometida, ex=ttl_seconds)
+                logger.info(f"[TOOL] Snooze Redis gravado: {phone} → {data_prometida} (TTL={dias+1}d)")
+            except Exception as e:
+                logger.warning(f"[TOOL] Snooze Redis falhou (Supabase OK): {e}")
+
         except Exception as e:
             logger.warning(f"[TOOL] Erro ao salvar snooze no Supabase: {e}")
             from infra.incidentes import registrar_incidente

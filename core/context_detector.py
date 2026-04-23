@@ -108,16 +108,17 @@ REGRAS PARA ESTE CONTEXTO:
 """
 
     if context_type == "manutencao":
+        from core.constants import QUEUE_ATENDIMENTO, USER_NATHALIA
         return f"""## CONTEXTO ATIVO: MANUTENÇÃO PREVENTIVA
 O cliente recebeu aviso de manutenção preventiva (contrato: {reference_id or 'N/A'}).
 Ele está respondendo sobre AGENDAMENTO DE MANUTENÇÃO.
 
 REGRAS PARA ESTE CONTEXTO:
 - NÃO peça CPF — o lead já está identificado
-- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → transfira para Atendimento/Nathália (fila 453, atendente 815) IMEDIATAMENTE. NÃO peça CPF, NÃO consulte. Apenas transfira. Defeito NÃO é manutenção preventiva.
+- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → transfira para Atendimento/Nathália (fila {QUEUE_ATENDIMENTO}, atendente {USER_NATHALIA}) IMEDIATAMENTE. NÃO peça CPF, NÃO consulte. Apenas transfira. Defeito NÃO é manutenção preventiva.
 - Se NÃO for defeito → pergunte dia e horário de preferência para a visita técnica
 - Se quiser reagendar → pergunte novo dia/horário
-- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok", "não") → transfira para Atendimento/Nathália (fila 453, atendente 815) IMEDIATAMENTE, sem insistir. A empresa precisa registrar a recusa.
+- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok", "não") → transfira para Atendimento/Nathália (fila {QUEUE_ATENDIMENTO}, atendente {USER_NATHALIA}) IMEDIATAMENTE, sem insistir. A empresa precisa registrar a recusa.
 - Manutenção preventiva é GRATUITA (inclusa no contrato)
 """
 

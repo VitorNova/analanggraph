@@ -118,10 +118,11 @@ def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
                 if tool_calls:
                     lang_msgs.append(AIMessage(content=content, tool_calls=tool_calls))
                 else:
-                    # Sanitizar tool-as-text: Gemini 2.0 Flash às vezes escreve
+                    # Sanitizar tool-as-text: Gemini às vezes escreve
                     # nome de tool como texto no content em vez de usar function calling.
                     # Se o histórico tem isso, limpar para não contaminar futuras respostas.
-                    if "transferir_departamento(" in content or "consultar_cliente(" in content or "registrar_compromisso(" in content:
+                    from core.hallucination import detectar_tool_como_texto
+                    if detectar_tool_como_texto(content):
                         content = ""
                     lang_msgs.append(AIMessage(content=content))
             elif role == "tool":

@@ -32,7 +32,7 @@ TIMEZONE_OFFSET = -4  # UTC-4 (Mato Grosso)
 
 # Filas onde a IA responde (importado de constants)
 from core.constants import IA_QUEUES, TABLE_LEADS, QUEUE_IA, USER_IA
-FALLBACK_MSG = "Desculpe, ocorreu um erro interno. Por favor, tente novamente em alguns instantes."
+from core.constants import FALLBACK_MSG
 MAX_TOOL_ROUNDS = 5
 ADMIN_PHONE = os.environ.get("ADMIN_PHONE")
 
@@ -100,9 +100,9 @@ async def call_model(state: State) -> dict:
 
     # Contexto extra (billing/manutenção) é injetado por processar_mensagens()
     # via _context_extra, evitando query ao Supabase em cada iteração do loop ReAct
-    extra = _context_extra.get(state.get("phone", ""), "")
-    if extra:
-        prompt += "\n\n" + extra
+    ctx_data = _context_extra.get(state.get("phone", ""))
+    if ctx_data:
+        prompt += "\n\n" + ctx_data["prompt"]
 
     messages = [SystemMessage(content=prompt)] + state["messages"]
     response = await get_model().ainvoke(messages)
@@ -300,7 +300,10 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
                 history_data = ctx_result.data[0].get("conversation_history")
                 context_type, reference_id = detect_context(history_data)
                 if context_type:
-                    _context_extra[phone] = build_context_prompt(context_type, reference_id)
+                    _context_extra[phone] = {
+                        "type": context_type,
+                        "prompt": build_context_prompt(context_type, reference_id),
+                    }
                     logger.info(f"[GRAFO:{phone}] Contexto injetado: {context_type}")
                     log_event("context_detected", phone, context=context_type, ref=reference_id)
     except Exception as e:
@@ -374,17 +377,22 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
             break
 
     # 8. Extrair resposta final e enviar
+    # FIX-03: pular AIMessage com tool_calls (intermediária, não final)
+    # FIX-03: filtrar respostas triviais (".", "..", pontuação solta)
     resposta = None
     for msg in reversed(result["messages"]):
         if isinstance(msg, AIMessage) and msg.content:
+            if msg.tool_calls:
+                continue
             content = msg.content
             # Gemini 3.x pode retornar lista
             if isinstance(content, list):
                 content = " ".join(
                     p.get("text", "") for p in content if isinstance(p, dict)
                 )
-            if content.strip():
-                resposta = content.strip()
+            content = content.strip()
+            if content and len(content) > 2 and content.strip('.!?…,; \n'):
+                resposta = content
                 break
 
     # Logar tool calls e resposta
@@ -486,8 +494,9 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
 
     # Auto-snooze 48h: se era contexto billing e Ana NÃO transferiu, silencia disparos
     from core.auto_snooze import auto_snooze_billing
-    ctx_extra = _context_extra.get(phone, "")
-    await auto_snooze_billing(phone, ctx_extra, novas_mensagens, redis)
+    ctx_data = _context_extra.get(phone)
+    ctx_type = ctx_data["type"] if ctx_data else None
+    await auto_snooze_billing(phone, ctx_type, novas_mensagens, redis)
 
     # Limpar cache de contexto
     _context_extra.pop(phone, None)

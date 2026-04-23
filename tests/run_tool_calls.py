@@ -182,9 +182,9 @@ async def run_one(scenario: dict) -> dict:
 
     _context_extra.pop(phone, None)
     if ctx == "billing":
-        _context_extra[phone] = build_context_prompt("billing", "pay_abc123")
+        _context_extra[phone] = {"type": "billing", "prompt": build_context_prompt("billing", "pay_abc123")}
     elif ctx == "manutencao":
-        _context_extra[phone] = build_context_prompt("manutencao", "contract_xyz")
+        _context_extra[phone] = {"type": "manutencao", "prompt": build_context_prompt("manutencao", "contract_xyz")}
 
     messages = []
     if ctx == "billing":

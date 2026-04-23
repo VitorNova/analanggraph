@@ -122,14 +122,32 @@ class MessageBuffer:
             # Chamar callback (processar_mensagens do grafo)
             await self._process_callback(phone, messages, context)
 
-            # Sucesso: agora sim limpar o buffer
+            # Sucesso: limpar buffer + zerar counter de falhas
             await redis.buffer_clear(phone)
+            fail_key = f"buffer:fail:{redis._buffer_key(phone)}"
+            await redis.client.delete(fail_key)
 
         except Exception as e:
             # Falha: buffer PRESERVADO para próximo processamento
             logger.error(f"[BUFFER:{phone}] Erro no callback, buffer PRESERVADO: {e}", exc_info=True)
             from infra.incidentes import registrar_incidente
             registrar_incidente(phone, "buffer_erro", str(e)[:300])
+
+            # Counter de falhas consecutivas
+            fail_key = f"buffer:fail:{redis._buffer_key(phone)}"
+            fail_count = await redis.client.incr(fail_key)
+            await redis.client.expire(fail_key, 3600)
+
+            if fail_count >= 3:
+                logger.error(f"[BUFFER:{phone}] {fail_count} falhas consecutivas → fallback + clear")
+                from core.constants import FALLBACK_MSG
+                from infra.leadbox_client import enviar_resposta_leadbox
+                try:
+                    enviar_resposta_leadbox(phone, FALLBACK_MSG)
+                except Exception:
+                    pass
+                await redis.buffer_clear(phone)
+                await redis.client.delete(fail_key)
 
         finally:
             self._processing_keys.discard(phone)
