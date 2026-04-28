@@ -511,54 +511,6 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     if resposta:
         log_event("response", phone, text=resposta[:150], tokens=usage.get("total", 0))
 
-    # Detectar hallucination: Ana diz que fez mas não chamou a tool
-    from core.hallucination import detectar_hallucination, inferir_destino_do_texto
-    hall_tools = detectar_hallucination(novas_mensagens, phone)
-    hall_bloqueou = False
-    for tool_name in hall_tools:
-        logger.warning(f"[GRAFO:{phone}] HALLUCINATION: Ana NÃO chamou {tool_name}")
-        log_event("hallucination", phone, tool=tool_name, text=resposta[:100] if resposta else "")
-        from infra.incidentes import registrar_incidente
-        registrar_incidente(phone, "hallucination", f"Não chamou {tool_name}", {"tool": tool_name, "resposta": (resposta or "")[:200]})
-        if ADMIN_PHONE:
-            from infra.leadbox_client import enviar_resposta_leadbox
-            try:
-                enviar_resposta_leadbox(
-                    ADMIN_PHONE,
-                    f"HALLUCINATION: Lead {phone[-4:]} — NÃO chamou {tool_name}",
-                )
-            except Exception:
-                pass
-
-        # CONTINGÊNCIA: se era transferência, executar a tool e bloquear envio do texto mentiroso
-        if tool_name == "transferir_departamento":
-            destino = inferir_destino_do_texto(resposta)
-            if destino:
-                try:
-                    from core.tools import transferir_departamento
-                    result_transfer = transferir_departamento.invoke({
-                        "destino": destino,
-                        "phone": phone,
-                    })
-                    if "Erro" in str(result_transfer):
-                        logger.error(f"[GRAFO:{phone}] Hallucination contingência: transferência falhou — {result_transfer}")
-                        from infra.leadbox_client import enviar_resposta_leadbox
-                        enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
-                    else:
-                        logger.info(f"[GRAFO:{phone}] Hallucination contingência: transferência executada → {destino}")
-                        log_event("hallucination_recovered", phone, tool="transferir_departamento", destino=destino)
-                except Exception as e:
-                    logger.error(f"[GRAFO:{phone}] Hallucination contingência falhou: {e}", exc_info=True)
-                    registrar_incidente(phone, "transferencia_falhou", f"Hallucination contingência: {e}"[:300], {"destino": destino})
-                    from infra.leadbox_client import enviar_resposta_leadbox
-                    enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
-                hall_bloqueou = True
-
-    # Se hallucination bloqueou, não enviar resposta mentirosa ao cliente
-    if hall_bloqueou:
-        _context_extra.pop(phone, None)
-        return
-
     # INTERCEPTOR: bloquear tool-as-text de chegar ao cliente
     # Se Gemini escreveu nome de tool como texto (bug conhecido do 2.0 Flash),
     # bloquear envio e executar a ação diretamente ou transferir para humano
