@@ -12,7 +12,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _HALL_CHECKS = [
-    ("transferir_departamento", [r"\btransferi\b", r"\bencaminhei\b", r"\bdirecionei\b", "te passo para", "vou te transferir", "vou transferir", "transferir voc", r"\bte transfiro\b", r"\bte encaminho\b"]),
+    ("transferir_departamento", [r"\btransferi\b", r"\bencaminhei\b", r"\bdirecionei\b", "te passo para", "transferir voc"]),
     ("registrar_compromisso", [r"\bregistrei\b", r"\banotei o compromisso\b", "compromisso registrado"]),
     ("consultar_cliente", [r"\bverifiquei\b", r"\bconsultei\b", "encontrei no sistema", r"(?<!não )(?<!nao )\blocalizei\b"]),
 ]
@@ -121,6 +121,34 @@ def detectar_tool_como_texto(resposta: str) -> Optional[dict]:
             return {"tool": "transferir_departamento", "destino": destino}
 
     return None
+
+
+def checar_resposta_pre_envio(content: str, tool_names_in_session: set[str]) -> list[tuple[str, str]]:
+    """Checa se a resposta afirma ação sem tool call (guardrail preventivo).
+
+    Usado DENTRO de call_model(), ANTES do return — resposta errada nunca entra no State.
+    Reutiliza os mesmos patterns de _HALL_CHECKS.
+
+    Args:
+        content: Texto da resposta do LLM (já em lowercase).
+        tool_names_in_session: Set de nomes de tools já chamadas nesta sessão.
+
+    Returns:
+        Lista de (tool_name, pattern_matched) para cada violação encontrada.
+        Lista vazia se resposta está limpa.
+    """
+    if not content:
+        return []
+    violations = []
+    content_lower = content.lower() if content != content.lower() else content
+    for tool_name, patterns in _HALL_CHECKS:
+        if tool_name in tool_names_in_session:
+            continue
+        for pat in patterns:
+            if re.search(pat, content_lower):
+                violations.append((tool_name, pat))
+                break
+    return violations
 
 
 def detectar_hallucination(novas_mensagens: list, phone: str) -> list[str]:

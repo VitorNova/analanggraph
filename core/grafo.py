@@ -72,7 +72,7 @@ def _build_model():
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: SafetySetting.HarmBlockThreshold.BLOCK_NONE,
         },
     )
-    return llm.bind_tools(TOOLS) if TOOLS else llm
+    return llm.bind_tools(TOOLS, tool_choice="auto") if TOOLS else llm
 
 
 _model = None
@@ -91,7 +91,12 @@ def get_model():
 # =============================================================================
 
 async def call_model(state: State) -> dict:
-    """Invoca LLM com system prompt + histórico."""
+    """Invoca LLM com system prompt + histórico.
+
+    Inclui guardrail antierro: se a resposta afirma ter executado uma tool
+    sem realmente tê-la chamado, faz retry (max 1x) e fallback.
+    A resposta errada NUNCA entra no State.
+    """
     # Injetar data/hora atual no prompt
     now = datetime.now(timezone(timedelta(hours=TIMEZONE_OFFSET)))
     system_time = now.strftime("%d/%m/%Y %H:%M") + f" (timezone UTC{TIMEZONE_OFFSET:+d})"
@@ -107,6 +112,98 @@ async def call_model(state: State) -> dict:
     messages = [SystemMessage(content=prompt)] + state["messages"]
     response = await get_model().ainvoke(messages)
 
+    # =========================================================================
+    # GUARDRAIL ANTIERRO — resposta errada nunca entra no State
+    # =========================================================================
+    if not response.tool_calls:
+        # Normalizar content para string (Gemini 2.5 pode retornar list[dict])
+        content_str = ""
+        if response.content:
+            if isinstance(response.content, list):
+                content_str = " ".join(
+                    p.get("text", "") for p in response.content if isinstance(p, dict)
+                )
+            else:
+                content_str = str(response.content)
+
+        if content_str.strip():
+            # Coletar tools já chamadas nesta sessão (ToolMessages no state)
+            _tool_names_in_session = {
+                m.name for m in state["messages"]
+                if isinstance(m, ToolMessage) and hasattr(m, "name")
+            }
+
+            from core.hallucination import checar_resposta_pre_envio
+            violations = checar_resposta_pre_envio(content_str, _tool_names_in_session)
+
+            if violations:
+                phone = state.get("phone", "?")
+                tool_violada = violations[0][0]
+                logger.warning(
+                    f"[ANTIERRO:{phone}] Hallucination detectada PRÉ-envio: "
+                    f"{tool_violada} não chamada. Tentando retry..."
+                )
+
+                # Log do incidente
+                try:
+                    from infra.incidentes import registrar_incidente
+                    registrar_incidente(
+                        phone, "hallucination",
+                        f"Antierro PRÉ-envio: {tool_violada} não chamada",
+                        {"resposta_original": content_str[:300], "acao": "retry"},
+                    )
+                except Exception:
+                    pass
+
+                # CAMADA 2: Retry — devolver ao LLM com instrução de correção
+                messages_retry = list(messages) + [
+                    response,
+                    HumanMessage(content=(
+                        "[SISTEMA — NÃO RESPONDA A ESTA MENSAGEM COMO SE FOSSE DO CLIENTE]\n\n"
+                        f"⚠️ CORREÇÃO OBRIGATÓRIA: sua resposta acima afirmou que você fez "
+                        f"{tool_violada}, mas você NÃO chamou a ferramenta. Isso é PROIBIDO.\n\n"
+                        f"VOCÊ DEVE fazer UMA dessas coisas:\n"
+                        f"1. Chamar {tool_violada}() com os argumentos corretos (PREFERÍVEL)\n"
+                        f"2. Se não conseguir, reformule sem afirmar que já fez a ação.\n\n"
+                        "Responda ao cliente normalmente — reformule sua resposta anterior."
+                    )),
+                ]
+                response = await get_model().ainvoke(messages_retry)
+
+                # Se retry retornou tool_calls → ótimo, grafo executa normalmente
+                if response.tool_calls:
+                    logger.info(f"[ANTIERRO:{phone}] Retry corrigiu: {tool_violada} chamada via tool_call")
+                    return {"messages": [response]}
+
+                # CAMADA 3: Contingência — se era transferência, inferir e executar
+                if tool_violada == "transferir_departamento":
+                    from core.hallucination import inferir_destino_do_texto
+                    retry_content = ""
+                    if response.content:
+                        if isinstance(response.content, list):
+                            retry_content = " ".join(
+                                p.get("text", "") for p in response.content if isinstance(p, dict)
+                            )
+                        else:
+                            retry_content = str(response.content)
+                    destino = inferir_destino_do_texto(retry_content or content_str)
+                    if destino:
+                        logger.info(f"[ANTIERRO:{phone}] Contingência: forçando transferência → {destino}")
+                        # Criar tool_call sintético para o grafo executar
+                        response = AIMessage(
+                            content="",
+                            tool_calls=[{
+                                "name": "transferir_departamento",
+                                "args": {"destino": destino},
+                                "id": "antierro_contingencia",
+                            }],
+                        )
+                        return {"messages": [response]}
+
+                # CAMADA 4: Fallback — substituir por mensagem segura
+                logger.warning(f"[ANTIERRO:{phone}] Retry falhou, aplicando fallback")
+                response = AIMessage(content=FALLBACK_MSG)
+
     return {"messages": [response]}
 
 
@@ -118,6 +215,17 @@ def route_model_output(state: State) -> Literal["tools", "__end__"]:
     """Se LLM chamou tool → 'tools', senão → END. Limita rounds para evitar loops."""
     last = state["messages"][-1]
     if isinstance(last, AIMessage) and last.tool_calls:
+        # Se transferir_departamento já foi chamada com sucesso nesta invocação, encerrar
+        # Evita loop onde Gemini chama transferir 3-5x seguidas
+        for m in reversed(state["messages"]):
+            if isinstance(m, HumanMessage):
+                break
+            if isinstance(m, ToolMessage) and hasattr(m, "name") and m.name == "transferir_departamento":
+                content = str(m.content) if m.content else ""
+                if "Transferido" in content or "sucesso" in content.lower():
+                    logger.info("[GRAFO] transferir_departamento já executada — encerrando")
+                    return END
+
         # Contar apenas tool rounds DESTA invocação (após último HumanMessage)
         # Ignora histórico de conversas anteriores
         rounds = 0
@@ -502,10 +610,20 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     _context_extra.pop(phone, None)
 
     # Re-check pausa antes de enviar (humano pode ter assumido durante processamento)
-    if await redis.is_paused(phone):
+    # Exceção: se a própria Ana transferiu nesta invocação, enviar a despedida antes de parar
+    ia_transferiu = any(
+        isinstance(m, AIMessage) and m.tool_calls and
+        any(tc["name"] == "transferir_departamento" for tc in m.tool_calls)
+        for m in novas_mensagens
+    )
+
+    if await redis.is_paused(phone) and not ia_transferiu:
         logger.info(f"[GRAFO:{phone}] Pausa detectada antes do envio — abortando resposta")
         log_event("paused_before_send", phone)
         return
+
+    if ia_transferiu:
+        logger.info(f"[GRAFO:{phone}] Transferência própria — enviando despedida antes de pausar")
 
     # Salvar todas as mensagens do agente (incluindo tool_calls) — após re-check pausa
     # para evitar histórico fantasma (resposta salva mas nunca enviada)
@@ -513,11 +631,16 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
         salvar_mensagens_agente(phone, mensagens_agente, usage=usage or None)
 
     # Enviar resposta via Leadbox
+    # Se a Ana transferiu, NÃO enviar queue_id/user_id na despedida — senão
+    # forceTicketToDepartment desfaz a transferência movendo o ticket de volta pra fila IA
     from infra.leadbox_client import enviar_resposta_leadbox
 
+    send_queue = None if ia_transferiu else current_queue
+    send_user = None if ia_transferiu else USER_IA
+
     if resposta:
-        enviar_resposta_leadbox(phone, resposta, queue_id=current_queue, user_id=USER_IA)
+        enviar_resposta_leadbox(phone, resposta, queue_id=send_queue, user_id=send_user)
     else:
         from infra.incidentes import registrar_incidente
         registrar_incidente(phone, "resposta_vazia", "Gemini retornou sem texto")
-        enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=current_queue, user_id=USER_IA)
+        enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=send_queue, user_id=send_user)

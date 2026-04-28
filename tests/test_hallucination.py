@@ -52,9 +52,10 @@ def test_falso_positivo_transferir():
     assert not _detecta("Posso te transferir para o financeiro?", "transferir_departamento")
 
 
-def test_hallucination_vou_transferir():
-    # "Vou te transferir" sem chamar a tool É hallucination (confirmado em produção 2026-04-13)
-    assert _detecta("Vou te transferir para o financeiro, pode ser?", "transferir_departamento")
+def test_vou_transferir_nao_detecta():
+    # "Vou te transferir" removido dos patterns — ambíguo demais (falsos positivos no funil de vendas)
+    # Detecção agora se limita a tempo passado inequívoco ("transferi", "encaminhei")
+    assert not _detecta("Vou te transferir para o financeiro, pode ser?", "transferir_departamento")
 
 
 def test_hallucination_encaminhei():
@@ -182,3 +183,186 @@ def test_inferir_destino_none():
 
 def test_inferir_destino_vazio():
     assert inferir_destino_do_texto("") is None
+
+
+# ── Testes de falsos positivos do funil de vendas (fix 2026-04-27) ──
+
+def test_falso_positivo_funil_vendas_encaminho():
+    """Caso real de produção: Ana pede CPF e diz 'já te encaminho' — NÃO é hallucination."""
+    assert not _detecta(
+        "Me passa nome e CPF, já te encaminho pro time finalizar.",
+        "transferir_departamento",
+    )
+
+
+def test_falso_positivo_funil_vendas_transfiro():
+    """Ana diz 'te transfiro' no futuro condicional — NÃO deve detectar."""
+    assert not _detecta(
+        "Com esses dados, eu já te transfiro pra Nathália.",
+        "transferir_departamento",
+    )
+
+
+def test_falso_positivo_vou_transferir_condicional():
+    """'Vou transferir' condicional — NÃO deve detectar (removido dos patterns)."""
+    assert not _detecta(
+        "Assim que me passar os dados, vou transferir pro atendimento.",
+        "transferir_departamento",
+    )
+
+
+def test_verdadeiro_positivo_encaminhei_passado():
+    """'Encaminhei' no passado SEM tool call — DEVE detectar."""
+    assert _detecta(
+        "Já encaminhei sua solicitação para a Nathália.",
+        "transferir_departamento",
+    )
+
+
+def test_verdadeiro_positivo_transferi_passado():
+    """'Transferi' no passado SEM tool call — DEVE detectar."""
+    assert _detecta(
+        "Transferi você para o financeiro.",
+        "transferir_departamento",
+    )
+
+
+# ── Testes de checar_resposta_pre_envio (guardrail preventivo) ──
+
+from core.hallucination import checar_resposta_pre_envio
+
+
+# --- Caso 1: Detecta hallucination quando tool NÃO foi chamada ---
+
+def test_pre_envio_detecta_transferi_sem_tool():
+    """Ana diz 'transferi' sem ter chamado transferir_departamento → violação."""
+    violations = checar_resposta_pre_envio(
+        "já transferi você para o financeiro.",
+        tool_names_in_session=set(),
+    )
+    assert len(violations) >= 1
+    assert violations[0][0] == "transferir_departamento"
+
+
+def test_pre_envio_detecta_registrei_sem_tool():
+    """Ana diz 'registrei' sem ter chamado registrar_compromisso → violação."""
+    violations = checar_resposta_pre_envio(
+        "registrei seu compromisso para sexta-feira.",
+        tool_names_in_session=set(),
+    )
+    assert len(violations) >= 1
+    assert violations[0][0] == "registrar_compromisso"
+
+
+def test_pre_envio_detecta_verifiquei_sem_tool():
+    """Ana diz 'verifiquei' sem ter chamado consultar_cliente → violação."""
+    violations = checar_resposta_pre_envio(
+        "verifiquei aqui e seu pagamento consta.",
+        tool_names_in_session=set(),
+    )
+    assert len(violations) >= 1
+    assert violations[0][0] == "consultar_cliente"
+
+
+# --- Caso 2: NÃO detecta quando tool FOI chamada na sessão ---
+
+def test_pre_envio_permite_transferi_com_tool():
+    """Ana diz 'transferi' E a tool foi chamada → sem violação."""
+    violations = checar_resposta_pre_envio(
+        "já transferi você para o financeiro.",
+        tool_names_in_session={"transferir_departamento"},
+    )
+    assert len(violations) == 0
+
+
+def test_pre_envio_permite_registrei_com_tool():
+    """Ana diz 'registrei' E a tool foi chamada → sem violação."""
+    violations = checar_resposta_pre_envio(
+        "registrei seu compromisso para sexta-feira.",
+        tool_names_in_session={"registrar_compromisso"},
+    )
+    assert len(violations) == 0
+
+
+def test_pre_envio_permite_verifiquei_com_tool():
+    """Ana diz 'verifiquei' E a tool foi chamada → sem violação."""
+    violations = checar_resposta_pre_envio(
+        "verifiquei aqui e seu pagamento consta.",
+        tool_names_in_session={"consultar_cliente"},
+    )
+    assert len(violations) == 0
+
+
+# --- Caso 3: Texto limpo → sem violação ---
+
+def test_pre_envio_texto_limpo():
+    """Saudação normal sem afirmação de ação → sem violação."""
+    violations = checar_resposta_pre_envio(
+        "olá! como posso te ajudar?",
+        tool_names_in_session=set(),
+    )
+    assert violations == []
+
+
+def test_pre_envio_texto_vazio():
+    """String vazia → sem violação."""
+    violations = checar_resposta_pre_envio("", tool_names_in_session=set())
+    assert violations == []
+
+
+# --- Caso 4: Falsos positivos do funil de vendas ---
+
+def test_pre_envio_nao_detecta_futuro_transferir():
+    """'Vou te transferir' (futuro) NÃO é hallucination — ainda não afirmou que fez."""
+    violations = checar_resposta_pre_envio(
+        "com esses dados, vou te transferir para a nathália.",
+        tool_names_in_session=set(),
+    )
+    # Nenhuma violação de transferir_departamento (futuro, não passado)
+    assert all(v[0] != "transferir_departamento" for v in violations)
+
+
+def test_pre_envio_nao_detecta_infinitivo():
+    """'Posso consultar' (infinitivo) NÃO é hallucination."""
+    violations = checar_resposta_pre_envio(
+        "preciso consultar seu cpf antes de verificar.",
+        tool_names_in_session=set(),
+    )
+    assert all(v[0] != "consultar_cliente" for v in violations)
+
+
+# --- Caso 5: Content como string simples ---
+
+def test_pre_envio_content_string():
+    """Content como string simples funciona."""
+    violations = checar_resposta_pre_envio(
+        "já transferi para o atendimento",
+        tool_names_in_session=set(),
+    )
+    assert len(violations) >= 1
+
+
+# --- Caso 6: Múltiplas violações simultâneas ---
+
+def test_pre_envio_multiplas_violacoes():
+    """Ana afirma ter feito 2 ações sem chamar nenhuma tool."""
+    violations = checar_resposta_pre_envio(
+        "verifiquei no sistema e já transferi para o financeiro.",
+        tool_names_in_session=set(),
+    )
+    tool_names = [v[0] for v in violations]
+    assert "consultar_cliente" in tool_names
+    assert "transferir_departamento" in tool_names
+
+
+# --- Caso 7: Tool parcialmente chamada ---
+
+def test_pre_envio_uma_tool_chamada_outra_nao():
+    """consultar_cliente chamada, mas transferir_departamento não → só 1 violação."""
+    violations = checar_resposta_pre_envio(
+        "verifiquei no sistema e já transferi para o financeiro.",
+        tool_names_in_session={"consultar_cliente"},
+    )
+    tool_names = [v[0] for v in violations]
+    assert "consultar_cliente" not in tool_names
+    assert "transferir_departamento" in tool_names
