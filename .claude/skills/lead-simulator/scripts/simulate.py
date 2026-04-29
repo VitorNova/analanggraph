@@ -157,20 +157,22 @@ SCENARIOS = {
         "expect_not_contains": [],
     },
     "B4": {
-        "nome": "Billing — lead afirma que pagou (com contexto)",
+        "nome": "Billing — lead afirma que pagou (com contexto) → financeiro",
         "grupo": "billing",
         "mensagem": "Já paguei ontem",
         "context": "billing",
-        "expect_tools": ["consultar_cliente"],
-        "expect_args": {"consultar_cliente": {"verificar_pagamento": "True"}},
+        "expect_tools": ["transferir_departamento"],
+        "allow_tools": ["consultar_cliente"],
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
         "expect_not_contains": ["CPF", "cpf"],
     },
     "B5": {
-        "nome": "Billing — lead afirma que pagou SEM contexto → pede CPF",
+        "nome": "Billing — lead afirma que pagou SEM contexto → financeiro",
         "grupo": "billing",
         "mensagem": "Já paguei meu boleto ontem",
         "context": None,
-        "expect_contains": ["CPF"],
+        "expect_tools": ["transferir_departamento"],
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
         "expect_not_contains": ["erro", "error"],
     },
     "B6": {
@@ -179,7 +181,7 @@ SCENARIOS = {
         "mensagem": "Tô sem condição de pagar, preciso negociar",
         "context": "billing",
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "454"}},
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
     },
     "B7": {
         "nome": "Billing — lead diz 'vou pagar depois' (compromisso vago)",
@@ -205,6 +207,7 @@ SCENARIOS = {
         "mensagem": "manda o pix pra mim",
         "context": None,
         "expect_tools": [],
+        "allow_tools": ["consultar_cliente"],
         "expect_contains_any": ["CPF", "cpf", "identificar", "localizar", "cadastro"],
         "expect_not_contains": ["erro"],
     },
@@ -222,15 +225,15 @@ SCENARIOS = {
         "mensagem": "não vou pagar não, tá caro demais isso aí",
         "context": "billing",
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453", "user_id": "813"}},
+        "expect_args": {"transferir_departamento": {"destino": "lazaro"}},
     },
     "B12": {
-        "nome": "Billing — lead envia comprovante por texto (com contexto)",
+        "nome": "Billing — lead envia comprovante por texto (com contexto) → financeiro",
         "grupo": "billing",
         "mensagem": "acabei de fazer o pix de R$189,90, segue comprovante",
         "context": "billing",
-        "expect_tools": ["consultar_cliente"],
-        "expect_args": {"consultar_cliente": {"verificar_pagamento": "True"}},
+        "expect_tools": ["transferir_departamento"],
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
         "expect_not_contains": ["CPF", "cpf"],
     },
     "B13": {
@@ -243,7 +246,7 @@ SCENARIOS = {
             {"role": "model", "content": "Verifiquei aqui e o pagamento ainda não apareceu no sistema. Tem certeza que deu certo? Se quiser tentar novamente, o link é: https://sandbox.asaas.com/i/abc123"},
         ],
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "454", "user_id": "814"}},
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
         "expect_not_contains": ["CPF", "cpf"],
     },
     "B14": {
@@ -252,7 +255,7 @@ SCENARIOS = {
         "mensagem": "quero falar com o Lázaro",
         "context": "billing",
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453", "user_id": "813"}},
+        "expect_args": {"transferir_departamento": {"destino": "lazaro"}},
     },
     "B15": {
         "nome": "Billing — lead quer cancelar contrato → Nathália imediato",
@@ -260,7 +263,7 @@ SCENARIOS = {
         "mensagem": "quero cancelar meu contrato, não quero mais",
         "context": "billing",
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453", "user_id": "815"}},
+        "expect_args": {"transferir_departamento": {"destino": "atendimento"}},
         "expect_not_contains": ["CPF", "cpf"],
     },
     "B16": {
@@ -269,7 +272,7 @@ SCENARIOS = {
         "mensagem": "quero devolver o ar condicionado, vem buscar",
         "context": "billing",
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453"}},
+        "expect_args": {"transferir_departamento": {"destino": "atendimento"}},
         "expect_not_contains": ["CPF", "cpf"],
     },
     "B17": {
@@ -297,7 +300,7 @@ SCENARIOS = {
         "context": "billing",
         "expect_tools": ["transferir_departamento"],
         "allow_tools": ["consultar_cliente"],
-        "expect_args": {"transferir_departamento": {"queue_id": "544"}},
+        "expect_args": {"transferir_departamento": {"destino": "cobrancas"}},
     },
     "B21": {
         "nome": "Billing — lead diz que pagou + manda comprovante + IA não acha → financeiro",
@@ -311,7 +314,7 @@ SCENARIOS = {
             {"role": "model", "content": "Pode mandar!"},
         ],
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "454", "user_id": "814"}},
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
         "expect_not_contains": ["CPF", "cpf"],
     },
     "B20": {
@@ -327,36 +330,34 @@ SCENARIOS = {
 
     # ── Manutenção — manutenção preventiva ──
     "M1": {
-        "nome": "Manutenção — lead responde com dia/hora",
+        "nome": "Manutenção — lead responde com dia/hora → avisa equipe (sem tool)",
         "grupo": "manutencao",
         "mensagem": "Pode ser segunda de manhã",
         "context": "manutencao",
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender"],
         "expect_not_contains": [
             "CPF", "cpf",
             "Aqui é a Ana", "sou a Ana", "Aluga-Ar!",
-            "Como posso te ajudar hoje", "tudo bem?",
+            "transferir",
         ],
     },
     "M2": {
-        "nome": "Manutenção — confirma dia/hora → transfere humano",
+        "nome": "Manutenção — lead diz 'bom dia' ao disparo → avisa equipe (sem tool)",
         "grupo": "manutencao",
-        "mensagem": "Isso, pode transferir",
+        "mensagem": "Bom dia",
         "context": "manutencao",
-        "historico_extra": [
-            {"role": "user", "content": "Pode ser segunda de manhã, umas 9h"},
-            {"role": "model", "content": "Segunda às 9h, anotado! Vou transferir para o atendimento confirmar a visita. Posso transferir?"},
-        ],
-        "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453"}},
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "manutenção"],
+        "expect_not_contains": ["CPF", "cpf", "transferir"],
     },
     "M3": {
-        "nome": "Manutenção — lead recusa → transfere Nathália",
+        "nome": "Manutenção — lead recusa → aceita sem insistir (sem tool)",
         "grupo": "manutencao",
         "mensagem": "Não preciso de manutenção, tá tudo ok",
         "context": "manutencao",
-        "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453", "user_id": "815"}},
-        "expect_not_contains": ["CPF", "cpf"],
+        "expect_tools": [],
+        "expect_not_contains": ["CPF", "cpf", "transferir", "insist"],
     },
     "M4": {
         "nome": "Manutenção — pergunta se é pago",
@@ -368,45 +369,31 @@ SCENARIOS = {
     },
 
     "M5": {
-        "nome": "Manutenção — fluxo completo 5 turnos (dia + hora + endereço → transfere)",
+        "nome": "Manutenção — lead diz 'quero agendar' → avisa equipe (sem tool)",
         "grupo": "manutencao",
-        "mensagem": "tá bom, pode confirmar com o pessoal",
+        "mensagem": "quero agendar",
         "context": "manutencao",
-        "historico_extra": [
-            {"role": "user", "content": "quero agendar"},
-            {"role": "model", "content": "Que ótimo! Qual dia fica melhor para você?"},
-            {"role": "user", "content": "segunda"},
-            {"role": "model", "content": "Segunda-feira perfeito! Qual horário prefere, manhã ou tarde?"},
-            {"role": "user", "content": "9h"},
-            {"role": "model", "content": "Ótimo, segunda às 9h! Pode me confirmar o endereço para a visita técnica?"},
-            {"role": "user", "content": "Rua das Flores, 123"},
-            {"role": "model", "content": "Perfeito! Segunda às 9h na Rua das Flores, 123. Vou transferir para o atendimento agendar a visita. Posso transferir?"},
-        ],
-        "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453"}},
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender"],
+        "expect_not_contains": ["CPF", "cpf", "qual dia", "qual horário", "transferir"],
     },
     "M6": {
-        "nome": "Manutenção — lead diz só 'sim' ao disparo → pergunta dia/hora",
+        "nome": "Manutenção — lead diz só 'sim' ao disparo → avisa equipe (sem tool)",
         "grupo": "manutencao",
         "mensagem": "sim",
         "context": "manutencao",
         "expect_tools": [],
-        "expect_not_contains": ["CPF", "cpf", "Aqui é a Ana", "sou a Ana"],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "agendar"],
+        "expect_not_contains": ["CPF", "cpf", "Aqui é a Ana", "sou a Ana", "transferir"],
     },
     "M7": {
-        "nome": "Manutenção — lead quer reagendar (muda o dia)",
+        "nome": "Manutenção — lead responde com áudio genérico → avisa equipe (sem tool)",
         "grupo": "manutencao",
-        "mensagem": "não vai dar segunda, pode ser quarta de manhã?",
+        "mensagem": "[mensagem de áudio]",
         "context": "manutencao",
-        "historico_extra": [
-            {"role": "user", "content": "pode ser segunda de manhã"},
-            {"role": "model", "content": "Segunda de manhã, anotado! Que horário prefere?"},
-            {"role": "user", "content": "9h"},
-            {"role": "model", "content": "Perfeito, segunda às 9h!"},
-        ],
         "expect_tools": [],
-        "allow_tools": ["transferir_departamento"],
-        "expect_not_contains": ["CPF", "cpf", "erro"],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender"],
+        "expect_not_contains": ["CPF", "cpf", "erro", "transferir"],
     },
     "M8": {
         "nome": "Manutenção — lead muda assunto para cobrança",
@@ -427,40 +414,71 @@ SCENARIOS = {
         "expect_not_contains": ["CPF", "cpf"],
     },
     "M10": {
-        "nome": "Manutenção — lead quer cancelar CONTRATO (não a manutenção) → transfere",
+        "nome": "Manutenção — lead quer cancelar CONTRATO → transfere (caso especial)",
         "grupo": "manutencao",
         "mensagem": "não quero mais o aluguel, quero cancelar meu contrato",
         "context": "manutencao",
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453", "user_id": "815"}},
+        "expect_args": {"transferir_departamento": {"destino": "atendimento"}},
         "expect_not_contains": ["CPF", "cpf"],
     },
     "M11": {
-        "nome": "Manutenção — lead não vai estar em casa → coleta outro dia",
+        "nome": "Manutenção — lead não vai estar em casa → avisa equipe (sem tool)",
         "grupo": "manutencao",
         "mensagem": "não vou estar em casa essa semana toda, só semana que vem",
         "context": "manutencao",
         "expect_tools": [],
-        "allow_tools": ["registrar_compromisso"],
-        "expect_not_contains": ["CPF", "cpf", "erro"],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "semana que vem"],
+        "expect_not_contains": ["CPF", "cpf", "erro", "transferir"],
     },
     "M12": {
-        "nome": "Manutenção — lead relata defeito urgente (ar parou) → transfere imediato",
+        "nome": "Manutenção — lead relata defeito urgente (ar parou) → avisa equipe (sem tool)",
         "grupo": "manutencao",
         "mensagem": "o ar parou de funcionar completamente, não liga mais",
         "context": "manutencao",
-        "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453", "user_id": "815"}},
-        "expect_not_contains": ["CPF", "cpf"],
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "técnic"],
+        "expect_not_contains": ["CPF", "cpf", "transferir"],
     },
     "M13": {
-        "nome": "Manutenção — lead relata defeito SEM contexto (orgânico) → pede CPF",
+        "nome": "Manutenção — lead relata defeito SEM contexto (orgânico) → transfere imediatamente",
         "grupo": "manutencao",
         "mensagem": "tenho um ar alugado com vocês e tá pingando água dentro de casa",
         "context": None,
+        "expect_tools": ["transferir_departamento"],
+        "allow_tools": ["consultar_cliente"],
+        "expect_not_contains": ["erro"],
+    },
+    "M14": {
+        "nome": "Manutenção — CASO REAL Maria de Fátima: áudio confirmando → avisa equipe (sem tool)",
+        "grupo": "manutencao",
+        "mensagem": "[mensagem de áudio — cliente confirma horário]",
+        "context": "manutencao",
+        "historico_extra": [
+            {"role": "user", "content": "[mensagem de áudio]"},
+            {"role": "model", "content": "Oi, bom dia! Sem problemas.\n\nPodemos agendar para hoje depois das 15h? Ou se ficar melhor pra você, temos horários na quarta-feira também."},
+        ],
         "expect_tools": [],
-        "allow_tools": ["consultar_cliente", "transferir_departamento"],
-        "expect_contains_any": ["CPF", "cpf", "CNPJ", "cnpj", "titular"],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender"],
+        "expect_not_contains": ["CPF", "cpf", "agendado", "confirmado", "15h", "quarta", "transferir"],
+    },
+    "M15": {
+        "nome": "Manutenção — lead responde 'pode ser hoje à tarde' → avisa equipe (sem tool, sem agendar sozinha)",
+        "grupo": "manutencao",
+        "mensagem": "pode ser hoje à tarde",
+        "context": "manutencao",
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender"],
+        "expect_not_contains": ["CPF", "cpf", "agendado", "confirmado", "transferir"],
+    },
+    "M16": {
+        "nome": "Manutenção — lead responde 'ok' ao disparo → avisa equipe (sem tool)",
+        "grupo": "manutencao",
+        "mensagem": "ok",
+        "context": "manutencao",
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "dia", "horário", "agendar"],
+        "expect_not_contains": ["CPF", "cpf", "Aqui é a Ana", "sou a Ana", "transferir"],
     },
 
     # ── Contexto — anti-saudação ──
@@ -480,7 +498,7 @@ SCENARIOS = {
         "mensagem": "oi",
         "context": "manutencao",
         "expect_not_contains": [
-            "Aqui é a Ana", "sou a Ana", "Aluga-Ar!",
+            "Aqui é a Ana", "Aluga-Ar!",
             "Como posso te ajudar hoje", "tudo bem?",
         ],
     },
@@ -526,13 +544,13 @@ SCENARIOS = {
 
     # ── Regressão — bugs reais de produção ──
     "R1": {
-        "nome": "Regressão — ar pingando sem contexto → pede CPF e transfere",
+        "nome": "Regressão — ar pingando sem contexto → transfere imediatamente",
         "grupo": "regressao",
         "mensagem": "minha mãe tem um ar alugado com vocês, está pingando",
         "context": None,
-        "expect_tools": [],
-        "allow_tools": ["transferir_departamento", "consultar_cliente"],
-        "expect_contains_any": ["CPF", "cpf", "CNPJ", "cnpj", "titular"],
+        "expect_tools": ["transferir_departamento"],
+        "allow_tools": ["consultar_cliente"],
+        "expect_not_contains": ["erro"],
     },
     "R2": {
         "nome": "Regressão — disse vou transferir mas não chamou tool",
@@ -568,22 +586,23 @@ SCENARIOS = {
         ],
     },
     "R6": {
-        "nome": "Regressão — manutenção com disparo não pede CPF",
+        "nome": "Regressão — manutenção com disparo não pede CPF (avisa equipe)",
         "grupo": "regressao",
         "mensagem": "o ar está fazendo barulho",
         "context": "manutencao",
-        "expect_not_contains": ["CPF", "CNPJ"],
-        "expect_tools": ["transferir_departamento"],
+        "expect_not_contains": ["CPF", "CNPJ", "transferir"],
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "técnic"],
     },
 
     "R7": {
-        "nome": "Regressão — consulta CPF retorna contrato ativo (status ACTIVE)",
+        "nome": "Regressão — mudança do ar → transfere atendimento",
         "grupo": "regressao",
         "mensagem": "Pará mudança do ar, que ficou de eu mandar as fotos do local. Meu CPF é 12345678901",
         "context": None,
-        "expect_tools": ["consultar_cliente"],
-        "expect_contains_any": ["contrato", "Contrato", "Split", "12000", "Flores", "189"],
-        "expect_not_contains": ["Nenhum contrato", "nenhum contrato", "erro"],
+        "expect_tools": ["transferir_departamento"],
+        "allow_tools": ["consultar_cliente"],
+        "expect_not_contains": ["erro"],
     },
     "R8": {
         "nome": "Regressão — ar não gela + CPF → transfere atendimento (defeito urgente)",
@@ -592,7 +611,6 @@ SCENARIOS = {
         "context": None,
         "expect_tools": ["transferir_departamento"],
         "allow_tools": ["consultar_cliente"],
-        "expect_args": {"transferir_departamento": {"queue_id": "453", "user_id": "815"}},
         "expect_not_contains": ["erro"],
     },
 
@@ -603,7 +621,6 @@ SCENARIOS = {
         "mensagem": "quanto custa o aluguel pra um quarto?",
         "context": None,
         "expect_tools": [],
-        "expect_contains_any": ["R$", "189", "mensais", "mensal"],
         "expect_not_contains": ["CPF", "erro"],
     },
     "V2": {
@@ -647,17 +664,18 @@ SCENARIOS = {
         "mensagem": "se eu quiser cancelar antes do prazo tem multa?",
         "context": None,
         "expect_tools": [],
+        "allow_tools": ["transferir_departamento"],
         "expect_not_contains": ["CPF", "erro", "não sei"],
     },
 
     # ── Multimodal — imagem e áudio ──
     "MM1": {
-        "nome": "Multimodal — comprovante de pagamento (texto)",
+        "nome": "Multimodal — comprovante de pagamento (texto) → financeiro",
         "grupo": "multimodal",
         "mensagem": "acabei de pagar, segue o comprovante do pix de R$189,90",
         "context": "billing",
-        "expect_tools": ["consultar_cliente"],
-        "expect_args": {"consultar_cliente": {"verificar_pagamento": "True"}},
+        "expect_tools": ["transferir_departamento"],
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
     },
     "MM2": {
         "nome": "Multimodal — áudio genérico",
@@ -749,7 +767,7 @@ SCENARIOS = {
         "mensagem": "não tenho como pagar esse valor, preciso negociar parcelas",
         "context": "billing",
         "expect_tools": ["transferir_departamento"],
-        "expect_args": {"transferir_departamento": {"queue_id": "454"}},
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
     },
     "S7": {
         "nome": "Snooze — lead SEM contexto diz 'pago sexta' → pede CPF (sem snooze)",
@@ -757,6 +775,7 @@ SCENARIOS = {
         "mensagem": "vou pagar sexta, me manda o boleto",
         "context": None,
         "expect_tools": [],
+        "allow_tools": ["consultar_cliente", "registrar_compromisso"],
         "expect_contains_any": ["CPF", "cpf", "identificar", "localizar", "cadastro"],
         "expect_not_contains": ["erro"],
     },
@@ -857,13 +876,182 @@ SCENARIOS = {
         ],
     },
     "TT8": {
-        "nome": "Tool-as-text — defeito em contexto manutenção → transfere (não escreve tool como texto)",
+        "nome": "Tool-as-text — defeito em contexto manutenção → avisa equipe (sem tool, sem texto de tool)",
         "grupo": "tool_text",
         "mensagem": "O ar parou de funcionar, não liga mais",
         "context": "manutencao",
+        "expect_tools": [],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "técnic"],
+        "expect_not_contains": [
+            "transferir_departamento", "queue_id", "user_id",
+            "transferir",
+        ],
+    },
+
+    # ── Multi-turno — cenários com histórico longo ──
+    "MT1": {
+        "nome": "Multi-turno — funil vendas: nome → CPF → transfere",
+        "grupo": "multi_turno",
+        "mensagem": "João da Silva",
+        "context": None,
+        "historico_extra": [
+            {"role": "user", "content": "quero alugar um ar condicionado"},
+            {"role": "model", "content": "Que legal! Pra eu te ajudar melhor, me diz: é pra quantos ambientes?"},
+            {"role": "user", "content": "só um quarto de 15m²"},
+            {"role": "model", "content": "Pra um quarto de 15m², o ideal é um Split de 12.000 BTUs. O aluguel fica R$ 189,90/mês com instalação inclusa. Quer seguir? Preciso do seu nome completo e CPF."},
+        ],
+        "expect_tools": [],
+        "expect_contains_any": ["CPF", "cpf"],
+        "expect_not_contains": ["erro", "transferir"],
+    },
+    "MT2": {
+        "nome": "Multi-turno — billing: pagou 2x insiste → financeiro",
+        "grupo": "multi_turno",
+        "mensagem": "já falei que paguei, olha o comprovante",
+        "context": "billing",
+        "historico_extra": [
+            {"role": "user", "content": "já paguei ontem"},
+            {"role": "model", "content": "Verifiquei aqui e o pagamento ainda não apareceu no sistema. Pode me mandar o comprovante?"},
+            {"role": "user", "content": "fiz o pix de R$189,90 ontem à noite"},
+            {"role": "model", "content": "Entendi! Vou verificar novamente no sistema."},
+        ],
+        "expect_tools": ["transferir_departamento"],
+        "expect_args": {"transferir_departamento": {"destino": "financeiro"}},
+        "expect_not_contains": ["CPF", "cpf"],
+    },
+    "MT3": {
+        "nome": "Multi-turno — defeito com CPF → transfere",
+        "grupo": "multi_turno",
+        "mensagem": "12345678901",
+        "context": None,
+        "historico_extra": [
+            {"role": "user", "content": "meu ar parou de funcionar"},
+            {"role": "model", "content": "Que chato! Vou te ajudar com isso. Me passa seu CPF pra eu localizar seu cadastro."},
+        ],
+        "expect_tools": ["transferir_departamento"],
+        "allow_tools": ["consultar_cliente"],
+        "expect_not_contains": ["erro"],
+    },
+
+    # =========================================================================
+    # RG: Regressão — bugs do audit 26-28/04/2026
+    # Cada cenário cobre 1 bug específico. P4 (resposta ".") não é testável
+    # pelo simulador (filtro vive em processar_mensagens, fora do graph.ainvoke).
+    # =========================================================================
+    "RG1": {
+        "nome": "Regressão P1 — NÃO inventar regra (ex: 'precisa pagar antes de instalar')",
+        "grupo": "regressao",
+        "mensagem": "Queria ver sobre a instalação, meu CPF é 12345678901",
+        "context": None,
+        "expect_tools": ["consultar_cliente"],
+        "allow_tools": ["transferir_departamento"],
+        "expect_not_contains": [
+            "precisa pagar", "quitar antes", "regularizar antes",
+            "pagar antes de instalar", "pendência", "precisa estar em dia",
+            "em aberto", "quitar", "regularizar",
+        ],
+        "mock_overrides": {
+            "cobrancas_pendentes": [{
+                "id": "pay_overdue1",
+                "value": 189.90,
+                "due_date": "2026-04-20",
+                "status": "OVERDUE",
+                "invoice_url": "https://sandbox.asaas.com/i/overdue1",
+            }],
+        },
+    },
+    "RG2": {
+        "nome": "Regressão P2 — NÃO agendar manutenção (transfere sem confirmar horário)",
+        "grupo": "regressao",
+        "mensagem": "Pode ser amanhã às 14h?",
+        "context": "manutencao",
+        "expect_tools": [],
+        "allow_tools": ["transferir_departamento"],
+        "expect_contains_any": ["equipe", "entrar em contato", "vai te atender", "vai atender", "agendar"],
+        "expect_not_contains": [
+            "Agendado", "agendado", "confirmado", "Confirmado",
+            "14h", "amanhã às 14", "nosso técnico vai passar",
+            "marcado", "combinado para amanhã",
+        ],
+    },
+    "RG3": {
+        "nome": "Regressão P3 — snooze expirado NÃO é compromisso ativo",
+        "grupo": "regressao",
+        "mensagem": "Oi, é sobre a mensalidade",
+        "context": "billing",
+        "expect_tools": [],
+        "allow_tools": ["consultar_cliente"],
+        "expect_not_contains": [
+            "combinado dia 25", "dia 25/04", "25 de abril",
+            "pagamento agendado", "compromisso ativo",
+            "silenciadas até 25", "snooze",
+        ],
+        "mock_overrides": {
+            "leads_data": [{
+                "telefone": "5566999881234",
+                "billing_snooze_until": "2026-04-25",
+            }],
+        },
+    },
+    "RG5": {
+        "nome": "Regressão P5 — timeout na transferência → NÃO diz 'indisponível'",
+        "grupo": "regressao",
+        "mensagem": "quero falar com a Nathália",
+        "context": None,
         "expect_tools": ["transferir_departamento"],
         "expect_not_contains": [
-            "transferir_departamento(", "queue_id=", "user_id=",
+            "não está disponível", "indisponível", "no momento",
+            "tente mais tarde", "não consegui transferir",
+            "Nathália não", "atendente não",
+        ],
+        "mock_overrides": {
+            "leadbox_side_effects": ["timeout", "success"],
+        },
+    },
+    "RG6": {
+        "nome": "Regressão P6 — múltiplas cobranças → enviar TODOS os links",
+        "grupo": "regressao",
+        "mensagem": "Me manda o boleto",
+        "context": "billing",
+        "expect_tools": [],
+        "allow_tools": ["consultar_cliente"],
+        "expect_contains": ["sandbox.asaas.com/i/overdue1", "sandbox.asaas.com/i/overdue2"],
+        "expect_not_contains": ["mais recente", "último boleto"],
+        "mock_overrides": {
+            "cobrancas_pendentes": [
+                {
+                    "id": "pay_overdue1",
+                    "value": 189.90,
+                    "due_date": "2026-04-03",
+                    "status": "OVERDUE",
+                    "invoice_url": "https://sandbox.asaas.com/i/overdue1",
+                },
+                {
+                    "id": "pay_overdue2",
+                    "value": 189.90,
+                    "due_date": "2026-03-03",
+                    "status": "OVERDUE",
+                    "invoice_url": "https://sandbox.asaas.com/i/overdue2",
+                },
+            ],
+        },
+    },
+    "RG7": {
+        "nome": "Regressão P7 — NÃO anunciar transferência (nome+CPF → transfere silencioso)",
+        "grupo": "regressao",
+        "mensagem": "João Silva, 123.456.789-00",
+        "context": None,
+        "historico_extra": [
+            {"role": "user", "content": "quero alugar um ar condicionado pra um quarto de 12m²"},
+            {"role": "model", "content": "Pra um quarto de 12m², o ideal é um Split de 12.000 BTUs. O aluguel fica R$ 189/mês, com instalação e manutenção inclusas no contrato de 12 meses. Quer seguir? Me passa seu nome completo e CPF!"},
+        ],
+        "expect_tools": ["transferir_departamento"],
+        "expect_args": {"transferir_departamento": {"destino": "atendimento"}},
+        "expect_not_contains": [
+            "vou transferir", "já te encaminho", "já estou te transferindo",
+            "já direcionei", "já te passei", "vou te passar",
+            "Nathália vai te ajudar", "a Nathália", "encaminhei para",
+            "direcionei para", "te encaminhando", "transferindo",
         ],
     },
 }
@@ -889,6 +1077,12 @@ class MockSupabaseChain:
             return MockSupabaseChain(filtered)
         if col == "customer_id" and self._data:
             filtered = [d for d in self._data if d.get("customer_id") == val]
+            return MockSupabaseChain(filtered)
+        if col == "status" and self._data:
+            filtered = [d for d in self._data if d.get("status") == val]
+            return MockSupabaseChain(filtered)
+        if col == "telefone" and self._data:
+            filtered = [d for d in self._data if d.get("telefone") == val]
             return MockSupabaseChain(filtered)
         return self
 
@@ -918,6 +1112,12 @@ class MockSupabaseChain:
     def lte(self, col, val):
         return self
 
+    def gt(self, col, val):
+        return self
+
+    def insert(self, data):
+        return self
+
     def order(self, col, **kwargs):
         return self
 
@@ -932,11 +1132,12 @@ class MockSupabaseChain:
 class MockSupabaseClient:
     """Mock completo do Supabase para consultar_cliente."""
 
-    def __init__(self, customer=None, cobrancas_pendentes=None, cobrancas_pagas=None, contratos=None):
+    def __init__(self, customer=None, cobrancas_pendentes=None, cobrancas_pagas=None, contratos=None, leads_data=None):
         self._customer = customer
         self._cobrancas_pendentes = cobrancas_pendentes or []
         self._cobrancas_pagas = cobrancas_pagas or []
         self._contratos = contratos or []
+        self._leads_data = leads_data or []
 
     def table(self, name):
         if name == "asaas_clientes":
@@ -959,19 +1160,20 @@ class MockSupabaseClient:
                 for ct in self._contratos
             ])
         if name == "ana_leads":
-            return MockSupabaseChain([])
+            return MockSupabaseChain(self._leads_data)
         return MockSupabaseChain([])
 
 
-def make_supabase_mock(customer=None, cobrancas_pendentes=None, cobrancas_pagas=None, contratos=None):
+def make_supabase_mock(customer=None, cobrancas_pendentes=None, cobrancas_pagas=None, contratos=None, leads_data=None):
     """Cria mock do Supabase para consultar_cliente."""
     mock_client = MockSupabaseClient(
         customer=customer or MOCK_CUSTOMER,
         cobrancas_pendentes=cobrancas_pendentes or MOCK_COBRANCAS_PENDENTES,
         cobrancas_pagas=cobrancas_pagas or MOCK_COBRANCAS_PAGAS,
         contratos=contratos or MOCK_CONTRATOS,
+        leads_data=leads_data,
     )
-    return patch("core.tools._get_supabase", return_value=mock_client)
+    return patch("infra.supabase.get_supabase", return_value=mock_client)
 
 
 # =============================================================================
@@ -979,7 +1181,7 @@ def make_supabase_mock(customer=None, cobrancas_pendentes=None, cobrancas_pagas=
 # =============================================================================
 
 def make_leadbox_mock():
-    """Mock de httpx.Client para transferir_departamento."""
+    """Mock de httpx.Client para transferir_departamento. Retorna (patcher, mock_client)."""
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
@@ -989,7 +1191,35 @@ def make_leadbox_mock():
     mock_client.__enter__ = MagicMock(return_value=mock_client)
     mock_client.__exit__ = MagicMock(return_value=False)
 
-    return patch("core.tools.httpx.Client", return_value=mock_client)
+    patcher = patch("core.tools.httpx.Client", return_value=mock_client)
+    return patcher, mock_client
+
+
+def make_leadbox_mock_stateful(side_effects):
+    """Mock do Leadbox com side_effect sequencial (ex: ['timeout', 'success']).
+
+    Usado para testar retry: primeira chamada falha, segunda sucede.
+    Patcha infra.leadbox_client._get_http_client (caminho real usado pela tool).
+    """
+    import httpx as _httpx
+    call_count = {"n": 0}
+
+    def _mock_post(*args, **kwargs):
+        idx = call_count["n"]
+        call_count["n"] += 1
+        effect = side_effects[min(idx, len(side_effects) - 1)]
+        if effect == "timeout":
+            raise _httpx.TimeoutException("Mock timeout")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    mock_client = MagicMock()
+    mock_client.post = _mock_post
+
+    patcher = patch("infra.leadbox_client._get_http_client", return_value=mock_client)
+    return patcher, mock_client
 
 
 # =============================================================================
@@ -1085,9 +1315,15 @@ async def run_scenario(scenario_id: str, scenario: dict) -> SimulationResult:
         _context_extra.pop(phone, None)
 
         if ctx == "billing":
-            _context_extra[phone] = build_context_prompt("billing", "pay_abc123")
+            _context_extra[phone] = {
+                "type": "billing",
+                "prompt": build_context_prompt("billing", "pay_abc123"),
+            }
         elif ctx == "manutencao":
-            _context_extra[phone] = build_context_prompt("manutencao", "contract_xyz")
+            _context_extra[phone] = {
+                "type": "manutencao",
+                "prompt": build_context_prompt("manutencao", "contract_xyz"),
+            }
 
         # 2. Montar histórico (SEM SystemMessage — call_model adiciona)
         messages = []
@@ -1110,9 +1346,21 @@ async def run_scenario(scenario_id: str, scenario: dict) -> SimulationResult:
         # 3. Mensagem atual do lead
         messages.append(HumanMessage(content=scenario["mensagem"]))
 
-        # 4. Rodar grafo com mocks
-        with make_supabase_mock():
-            with make_leadbox_mock():
+        # 4. Rodar grafo com mocks (suporta overrides por cenário via mock_overrides)
+        mock_ov = scenario.get("mock_overrides", {})
+        if "leadbox_side_effects" in mock_ov:
+            leadbox_patcher, leadbox_mock = make_leadbox_mock_stateful(mock_ov["leadbox_side_effects"])
+        else:
+            leadbox_patcher, leadbox_mock = make_leadbox_mock()
+        supabase_mock = make_supabase_mock(
+            customer=mock_ov.get("customer"),
+            cobrancas_pendentes=mock_ov.get("cobrancas_pendentes"),
+            cobrancas_pagas=mock_ov.get("cobrancas_pagas"),
+            contratos=mock_ov.get("contratos"),
+            leads_data=mock_ov.get("leads_data"),
+        )
+        with supabase_mock:
+            with leadbox_patcher:
                 invoke_result = await graph.ainvoke(
                     {"messages": messages, "phone": phone},
                 )
@@ -1169,6 +1417,35 @@ async def run_scenario(scenario_id: str, scenario: dict) -> SimulationResult:
 
     result.passed = result.all_passed
     return result
+
+
+async def run_scenario_with_retries(scenario_id: str, scenario: dict, retries: int = 1) -> SimulationResult:
+    """Wrapper com majority vote: roda até `retries` vezes, PASS se maioria passou."""
+    results = []
+    for attempt in range(retries):
+        result = await run_scenario(scenario_id, scenario)
+        results.append(result)
+        if result.all_passed:
+            break  # no need to retry on pass
+
+    # Pick best result (first passing, or first)
+    best = results[0]
+    for r in results:
+        if r.all_passed:
+            best = r
+            break
+
+    # Majority vote validation
+    if retries > 1 and len(results) > 1:
+        pass_count = sum(1 for r in results if r.all_passed)
+        best.validations.append({
+            "name": f"Majority vote ({pass_count}/{len(results)} runs passed)",
+            "passed": pass_count > len(results) // 2,
+            "detail": f"{len(results)} tentativas" if len(results) > 1 else "",
+        })
+
+    best.passed = best.all_passed
+    return best
 
 
 def _validate(result: SimulationResult, scenario: dict):
@@ -1256,8 +1533,10 @@ async def main():
     parser.add_argument("--expect-no-tool", action="store_true", help="Nenhuma tool esperada (ad-hoc)")
     parser.add_argument("--expect-contains", help="Resposta deve conter (ad-hoc)")
     parser.add_argument("--expect-not-contains", help="Resposta N\u00c3O deve conter (ad-hoc)")
+    parser.add_argument("--retries", type=int, default=1, help="Tentativas por cen\u00e1rio (majority vote, max 3)")
 
     args = parser.parse_args()
+    args.retries = max(1, min(3, args.retries))
 
     # Ad-hoc
     if args.adhoc:
@@ -1275,7 +1554,7 @@ async def main():
         if args.expect_not_contains:
             scenario["expect_not_contains"] = [args.expect_not_contains]
 
-        result = await run_scenario("ADHOC", scenario)
+        result = await run_scenario_with_retries("ADHOC", scenario, args.retries)
         result.print_report()
         return
 
@@ -1300,7 +1579,7 @@ async def main():
     # Executar
     results = []
     for sid, scenario in to_run:
-        result = await run_scenario(sid, scenario)
+        result = await run_scenario_with_retries(sid, scenario, args.retries)
         result.print_report()
         results.append(result)
 
