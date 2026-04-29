@@ -12,13 +12,13 @@ Funcionalidades:
 Uso:
     redis = await get_redis_service()
     await redis.buffer_add_message(phone, {"texto": "oi"})
-    msgs = await redis.buffer_get_and_clear(phone)
+    msgs = await redis.buffer_get_messages(phone)
 """
 
 import json
 import logging
 import os
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import redis.asyncio as redis
 
@@ -73,15 +73,6 @@ class RedisService:
         key = self._buffer_key(phone)
         raw = await self.client.lrange(key, 0, -1)
         return [json.loads(m) for m in raw]
-
-    async def buffer_get_and_clear(self, phone: str) -> List[dict]:
-        """Lê e limpa atomicamente."""
-        key = self._buffer_key(phone)
-        pipe = self.client.pipeline()
-        pipe.lrange(key, 0, -1)
-        pipe.delete(key)
-        results = await pipe.execute()
-        return [json.loads(m) for m in results[0]]
 
     async def buffer_clear(self, phone: str):
         await self.client.delete(self._buffer_key(phone))

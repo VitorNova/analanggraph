@@ -282,7 +282,7 @@ async def run_cenario(cenario: dict) -> dict:
 
     # INTERCEPTOR: mesmo que processar_mensagens() em produção
     # Se Gemini escreveu tool como texto, detectar e contar como tool chamada
-    from core.hallucination import detectar_tool_como_texto, detectar_hallucination
+    from core.hallucination import detectar_tool_como_texto
     tool_texto = detectar_tool_como_texto(response_text) if response_text else None
     if tool_texto:
         result["flow"].append({

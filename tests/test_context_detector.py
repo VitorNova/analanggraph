@@ -118,7 +118,7 @@ def test_prompt_manutencao_contem_preventiva():
     prompt = build_context_prompt("manutencao", "ct_456")
     assert "MANUTENÇÃO" in prompt
     assert "ct_456" in prompt
-    assert "453" in prompt  # queue_id Nathália
+    assert "GRATUITA" in prompt  # manutenção gratuita inclusa no contrato
 
 
 def test_prompt_desconhecido_retorna_vazio():

@@ -78,7 +78,8 @@ REGRAS:
 - CPF deve ter 11 dígitos (pessoa física) ou 14 dígitos (CNPJ empresa)
 - Se cliente informar CPF com pontos/traços, aceite normalmente — a limpeza é automática
 - Se não encontrar o cliente, informe que não localizou e peça para verificar o CPF
-- Após consultar, use as informações para responder ao cliente de forma clara
+- Após consultar, use APENAS as informações retornadas para responder. NÃO conecte campos para criar regras que não existem (ex: NÃO diga "precisa pagar antes de instalar" — isso não é regra da empresa)
+- Se houver múltiplas cobranças, envie TODOS os links de pagamento. NÃO resuma, NÃO diga "vou mandar o mais recente". Envie cada link separadamente
 
 EXEMPLOS DE USO:
 
@@ -203,7 +204,25 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
             if c.get("invoice_url"):
                 resp += f"  Link do boleto/pix: {c['invoice_url']}\n"
     else:
-        resp += "COBRANÇAS PENDENTES: Nenhuma ✅\n"
+        # Cenário 2: sem vencidos, verificar se há cobranças futuras
+        futuras = supabase.table("asaas_cobrancas").select(
+            "id, value, due_date, status, invoice_url"
+        ).eq("customer_id", customer_id).eq(
+            "status", "PENDING"
+        ).gt("due_date", hoje_iso).is_("deleted_at", "null").order("due_date").limit(6).execute()
+
+        futuras_data = futuras.data or []
+        if futuras_data:
+            resp += "COBRANÇAS VENCIDAS: Nenhuma ✅\n"
+            resp += f"COBRANÇAS FUTURAS ({len(futuras_data)}):\n"
+            for c in futuras_data:
+                resp += f"- R$ {c['value']:.2f} | Vencimento: {c['due_date']} | 📅 Futura\n"
+                if c.get("invoice_url"):
+                    resp += f"  Link do boleto/pix: {c['invoice_url']}\n"
+            resp += "\nINSTRUÇÃO: O cliente não tem cobranças vencidas, mas existem cobranças futuras. "
+            resp += "Informe que não há nada vencido e pergunte se deseja o boleto de algum mês específico entre os listados acima.\n"
+        else:
+            resp += "COBRANÇAS PENDENTES: Nenhuma ✅\n"
 
     # Contratos
     cts = contratos.data or []
@@ -215,7 +234,25 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
     else:
         resp += "\nCONTRATOS ATIVOS: Nenhum\n"
 
-    # 7. Busca pagamentos recentes (se solicitado)
+    # 7. Busca status do snooze (compromisso de pagamento)
+    if phone:
+        try:
+            phone_clean = re.sub(r'\D', '', phone)
+            snooze_result = supabase.table(TABLE_LEADS).select(
+                "billing_snooze_until"
+            ).eq("telefone", phone_clean).limit(1).execute()
+            if snooze_result.data:
+                snooze_until = snooze_result.data[0].get("billing_snooze_until")
+                if snooze_until:
+                    snooze_date = date.fromisoformat(str(snooze_until))
+                    if snooze_date >= date.today():
+                        resp += f"\nCOMPROMISSO DE PAGAMENTO: Ativo até {snooze_until} ✅ (cobranças automáticas silenciadas)\n"
+                    else:
+                        resp += f"\nCOMPROMISSO DE PAGAMENTO: EXPIRADO em {snooze_until} ❌ (a data já passou — NÃO mencione esta data como válida. Se o cliente perguntar, ofereça registrar nova data)\n"
+        except Exception as e:
+            logger.warning(f"[TOOL] Erro ao buscar snooze: {e}")
+
+    # 8. Busca pagamentos recentes (se solicitado)
     if verificar_pagamento:
         limite = (date.today() - timedelta(days=30)).isoformat()
         pagas = supabase.table("asaas_cobrancas").select(
@@ -262,12 +299,27 @@ def transferir_departamento(
 ) -> str:
     """Transfere o atendimento para outro departamento no Leadbox CRM. O telefone é injetado automaticamente.
 
+REGRA CRÍTICA: Em hipótese alguma diga "vou transferir", "já te encaminho", "já estou te transferindo", "já direcionei", "já te passei", "vou te passar pra Nathália", "a Nathália vai te ajudar" ou qualquer variação — nem ANTES, nem DURANTE, nem DEPOIS de chamar esta ferramenta. A ação substitui a fala.
+
+ERRADO (NUNCA faça isso, mesmo chamando a ferramenta):
+  "Vou te transferir para o financeiro!" → PROIBIDO
+  "Já te encaminhei para a Nathália!" → PROIBIDO
+  "Já estou te transferindo pra Nathália" → PROIBIDO
+  "Já direcionei seu atendimento" → PROIBIDO
+  "A Nathália do nosso time vai te ajudar" → PROIBIDO
+
+CERTO:
+  → Chame transferir_departamento(destino="financeiro") e responda apenas "Certo, um momento!"
+  → Chame transferir_departamento(destino="atendimento") e responda apenas "Perfeito!"
+  → Chame a ferramenta sem texto adicional
+
 QUANDO USAR:
 
 → destino="atendimento" (Nathália):
   - Novo aluguel após coletar nome+CPF
   - Retirada, devolução, mudança de endereço, cancelamento
-  - Defeito, manutenção, ar quebrou, pingando, barulho, não gela
+  - Defeito no ar: quebrou, pingando, barulho, não gela
+  - Manutenção preventiva: cliente quer agendar dia/horário (você NÃO pode agendar)
   - Reclamação, insatisfação
   - Cliente pede humano/atendente
   - Cidade fora de Rondonópolis/Primavera do Leste
@@ -283,13 +335,19 @@ QUANDO USAR:
 
 → destino="lazaro" (Lázaro/Dono):
   - Cliente pede falar com dono/proprietário/Lázaro
+  - Cliente recusa pagar ("não vou pagar", "tá caro demais")
   - Reclamações graves
+
+TRATAMENTO DE ERRO:
+Se esta ferramenta retornar erro começando com "ERRO_TÉCNICO:", você DEVE tentar chamar
+transferir_departamento novamente com os mesmos argumentos. NÃO diga que a pessoa não está
+disponível — foi apenas um problema temporário de conexão.
 
     Args:
         destino: Departamento de destino. Valores válidos: "atendimento", "financeiro", "cobrancas", "lazaro".
 
     Returns:
-        Confirmação de transferência ou mensagem de erro.
+        Confirmação de transferência ou mensagem de erro técnico com instrução de retry.
     """
     LEADBOX_URL = "https://enterprise-135api.leadbox.app.br"
     LEADBOX_UUID = os.environ.get("LEADBOX_API_UUID", "")
@@ -356,19 +414,25 @@ QUANDO USAR:
         logger.error(f"[TOOL] HTTP {e.response.status_code} ao transferir {phone} → {destino_nome}: {e}")
         from infra.incidentes import registrar_incidente
         registrar_incidente(phone, "transferencia_falhou", f"HTTP {e.response.status_code}", {"destino": destino})
-        return f"Erro HTTP {e.response.status_code} ao transferir para {destino_nome}"
+        return (f"ERRO_TÉCNICO: HTTP {e.response.status_code} ao transferir para {destino_nome}. "
+                f"Chame transferir_departamento(destino=\"{destino_lower}\") novamente. "
+                f"NÃO diga que {destino_nome} não está disponível.")
 
     except httpx.TimeoutException:
         logger.error(f"[TOOL] Timeout ao transferir {phone} → {destino_nome}")
         from infra.incidentes import registrar_incidente
         registrar_incidente(phone, "transferencia_falhou", "Timeout", {"destino": destino})
-        return f"Erro: timeout ao transferir para {destino_nome}. Tente novamente."
+        return (f"ERRO_TÉCNICO: timeout ao transferir para {destino_nome}. "
+                f"Chame transferir_departamento(destino=\"{destino_lower}\") novamente. "
+                f"NÃO diga que {destino_nome} não está disponível — foi apenas um erro temporário.")
 
     except Exception as e:
         logger.error(f"[TOOL] Erro ao transferir {phone} → {destino_nome}: {e}", exc_info=True)
         from infra.incidentes import registrar_incidente
         registrar_incidente(phone, "transferencia_falhou", str(e)[:300], {"destino": destino})
-        return f"Erro ao transferir para {destino_nome}: {str(e)[:100]}"
+        return (f"ERRO_TÉCNICO: falha ao transferir para {destino_nome}. "
+                f"Chame transferir_departamento(destino=\"{destino_lower}\") novamente. "
+                f"NÃO diga que {destino_nome} não está disponível.")
 
 
 # =============================================================================
@@ -488,91 +552,3 @@ Exemplo 5: Cliente diz "vou tentar pagar" (sem data específica)
 # =============================================================================
 
 TOOLS = [consultar_cliente, transferir_departamento, registrar_compromisso]
-
-
-# =============================================================================
-# FUNCTION DECLARATIONS (para uso direto com Gemini API se necessário)
-# =============================================================================
-# Se você precisar usar diretamente com a API do Gemini (sem LangChain),
-# aqui estão as FunctionDeclarations com enum correto:
-
-GEMINI_FUNCTION_DECLARATIONS = [
-    {
-        "name": "consultar_cliente",
-        "description": """Consulta dados do cliente no sistema: informações pessoais, cobranças pendentes/atrasadas e contratos ativos de aluguel de ar-condicionado.
-
-QUANDO USAR:
-- Cliente pergunta sobre pagamento, boleto, pix, fatura, segunda via
-- Cliente pergunta quanto deve, parcelas atrasadas, valor da mensalidade
-- Cliente pergunta sobre seu contrato ou equipamentos instalados
-- Cliente diz que já pagou → NÃO usar esta tool, transferir pro financeiro
-- Cliente veio por disparo de cobrança (use buscar_por_telefone=true)
-
-REGRAS:
-- Pergunte o CPF primeiro se não tiver
-- Se cliente veio por disparo, use buscar_por_telefone=true sem pedir CPF""",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "cpf": {
-                    "type": "string",
-                    "description": "CPF (11 dígitos) ou CNPJ (14 dígitos) do cliente. Apenas números."
-                },
-                "verificar_pagamento": {
-                    "type": "boolean",
-                    "description": "Se true, busca pagamentos recebidos nos últimos 30 dias. Use quando cliente afirmar que já pagou."
-                },
-                "buscar_por_telefone": {
-                    "type": "boolean",
-                    "description": "Se true, busca pelo telefone da conversa. Use APENAS quando cliente veio por disparo de cobrança."
-                }
-            }
-        }
-    },
-    {
-        "name": "transferir_departamento",
-        "description": """Transfere o atendimento para outro departamento no Leadbox CRM. NUNCA avise o cliente antes de transferir.
-
-QUANDO USAR:
-- atendimento: novo aluguel (após nome+CPF), retirada, manutenção, defeito, ar quebrado, reclamação, cliente pede humano
-- financeiro: restrição no CPF, comprovante mas fatura pendente, negociação de dívida
-- cobrancas: contestação de fatura, valor errado, não reconhece cobrança
-- lazaro: cliente pede falar com dono/Lázaro""",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "destino": {
-                    "type": "string",
-                    "enum": ["atendimento", "financeiro", "cobrancas", "lazaro"],
-                    "description": "Departamento de destino da transferência."
-                }
-            },
-            "required": ["destino"]
-        }
-    },
-    {
-        "name": "registrar_compromisso",
-        "description": """Registra que o cliente prometeu pagar em uma data específica. Silencia cobranças automáticas até essa data.
-
-QUANDO USAR:
-- Cliente promete pagar em dia específico: "vou pagar sexta", "pago amanhã", "dia 15 eu pago"
-- Cliente pede prazo: "me dá até sexta?", "posso pagar dia 20?"
-
-COMO CONVERTER:
-- "amanhã" → data de amanhã
-- "sexta" → próxima sexta-feira
-- "dia 15" → dia 15 do mês atual (ou próximo se já passou)
-
-NÃO use se cliente não especificar data clara.""",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "data_prometida": {
-                    "type": "string",
-                    "description": "Data em formato YYYY-MM-DD. Máximo 30 dias no futuro."
-                }
-            },
-            "required": ["data_prometida"]
-        }
-    }
-]

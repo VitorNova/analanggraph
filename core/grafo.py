@@ -577,11 +577,6 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     if ia_transferiu:
         logger.info(f"[GRAFO:{phone}] Transferência própria — enviando despedida antes de pausar")
 
-    # Salvar todas as mensagens do agente (incluindo tool_calls) — após re-check pausa
-    # para evitar histórico fantasma (resposta salva mas nunca enviada)
-    if mensagens_agente:
-        salvar_mensagens_agente(phone, mensagens_agente, usage=usage or None)
-
     # Enviar resposta via Leadbox
     # Se a Ana transferiu, NÃO enviar queue_id/user_id na despedida — senão
     # forceTicketToDepartment desfaz a transferência movendo o ticket de volta pra fila IA
@@ -596,3 +591,9 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
         from infra.incidentes import registrar_incidente
         registrar_incidente(phone, "resposta_vazia", "Gemini retornou sem texto")
         enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=send_queue, user_id=send_user)
+
+    # Salvar todas as mensagens do agente APÓS filtro e envio — evita gravar no
+    # histórico respostas descartadas (ex: ".", pontuação solta) que o cliente nunca viu.
+    # Mensagens com tool_calls são sempre salvas (intermediárias do grafo).
+    if mensagens_agente:
+        salvar_mensagens_agente(phone, mensagens_agente, usage=usage or None)

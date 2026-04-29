@@ -266,10 +266,10 @@ async def _processar_notificacao(item: dict, redis) -> bool:
 
     tel_envio = clean_phone if clean_phone.startswith("55") else f"55{clean_phone}"
 
-    from core.constants import QUEUE_MANUTENCAO, USER_IA
+    from core.constants import QUEUE_ATENDIMENTO, USER_NATHALIA
     if not enviar_template_leadbox(
         tel_envio, WHATSAPP_TEMPLATE, item["template_params"],
-        queue_id=QUEUE_MANUTENCAO, user_id=USER_IA,
+        queue_id=QUEUE_ATENDIMENTO, user_id=USER_NATHALIA,
     ):
         logger.error(f"[MANUTENCAO:{phone}] Leadbox erro ao enviar template")
         await redis.client.set(dedup_key, "1", ex=86400)

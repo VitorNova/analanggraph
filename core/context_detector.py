@@ -100,26 +100,27 @@ Ele está respondendo sobre PAGAMENTO.
 REGRAS PARA ESTE CONTEXTO:
 - NÃO peça CPF — use a ferramenta de consulta com buscar_por_telefone=true
 - Se o cliente responder com saudação genérica ("oi", "olá", "bom dia", "boa tarde") → ele está respondendo à cobrança. Pergunte se precisa de ajuda com o pagamento ou se quer o link atualizado. NÃO trate como conversa nova, NÃO repita saudação.
-- Se disser que já pagou ("já paguei", "fiz o pix", "mandei comprovante") → transfira para Financeiro IMEDIATAMENTE. NÃO consulte, NÃO verifique, NÃO peça CPF.
+- Se disser que já pagou ("já paguei", "fiz o pix", "mandei comprovante") → chame transferir_departamento(destino="financeiro") IMEDIATAMENTE. NÃO consulte, NÃO verifique, NÃO peça CPF.
 - O link de pagamento já foi enviado na mensagem anterior do histórico — se pedir Pix/link, reenvie o link REAL que aparece lá
-- Se quiser negociar → transfira para financeiro
+- Se quiser negociar → chame transferir_departamento(destino="financeiro")
 - Se tiver dúvida sobre valor → use a ferramenta de consulta com buscar_por_telefone=true
 - Se prometer pagar em uma data ("vou pagar sexta", "pago amanhã", "essa semana", "vou pagar depois") → use a ferramenta de registro de compromisso com a data em YYYY-MM-DD. NÃO diga "anotado" ou "registrei" sem usar a ferramenta PRIMEIRO. Converta a fala do lead para data ISO real. Se vago ("essa semana", "depois"), use a próxima sexta-feira.
 """
 
     if context_type == "manutencao":
-        from core.constants import QUEUE_ATENDIMENTO, USER_NATHALIA
         return f"""## CONTEXTO ATIVO: MANUTENÇÃO PREVENTIVA
 O cliente recebeu aviso de manutenção preventiva (contrato: {reference_id or 'N/A'}).
 Ele está respondendo sobre AGENDAMENTO DE MANUTENÇÃO.
 
 REGRAS PARA ESTE CONTEXTO:
 - NÃO peça CPF — o lead já está identificado
-- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → transfira para Atendimento/Nathália (fila {QUEUE_ATENDIMENTO}, atendente {USER_NATHALIA}) IMEDIATAMENTE. NÃO peça CPF, NÃO consulte. Apenas transfira. Defeito NÃO é manutenção preventiva.
-- Se NÃO for defeito → pergunte dia e horário de preferência para a visita técnica
-- Se quiser reagendar → pergunte novo dia/horário
-- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok", "não") → transfira para Atendimento/Nathália (fila {QUEUE_ATENDIMENTO}, atendente {USER_NATHALIA}) IMEDIATAMENTE, sem insistir. A empresa precisa registrar a recusa.
+- NÃO use nenhuma tool (nem transferir_departamento, nem consultar_cliente)
+- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → diga que a equipe técnica já vai entrar em contato para resolver. NÃO peça CPF, NÃO consulte.
+- Se o cliente ACEITAR ou RESPONDER sobre agendamento (mencionar dia, horário, "pode ser", "sim", "quero agendar", saudação, áudio, ou QUALQUER confirmação de interesse) → diga que a equipe já vai entrar em contato para agendar a visita. NÃO tente agendar sozinha, NÃO pergunte dia/horário, NÃO confirme data/hora. Apenas avise que a equipe entra em contato.
+- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok") → diga "tudo bem" e avise que a equipe entra em contato se precisar. NÃO insista.
+- Se perguntar se é PAGO ou quanto custa → responda que é GRATUITA (inclusa no contrato) e pergunte se quer agendar
 - Manutenção preventiva é GRATUITA (inclusa no contrato)
+- NUNCA use a palavra "transferir" — diga "a equipe já vai entrar em contato"
 """
 
     return ""

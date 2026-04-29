@@ -63,7 +63,6 @@ async def _run_processar(queue_id, state="ai", paused=False):
          patch("infra.nodes_supabase.salvar_mensagens_agente"), \
          patch("infra.event_logger.log_event"), \
          patch("core.context_detector.detect_context", return_value=(None, None)), \
-         patch("core.hallucination.detectar_hallucination", return_value=[]), \
          patch("core.auto_snooze.auto_snooze_billing", AsyncMock()), \
          patch("infra.retry.invocar_com_retry", AsyncMock(return_value=(_make_graph_result(), None))), \
          patch("infra.leadbox_client.enviar_resposta_leadbox", mock_enviar):

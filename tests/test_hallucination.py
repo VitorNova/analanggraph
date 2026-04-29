@@ -5,14 +5,13 @@ Valida que a regex com \\b diferencia corretamente:
 - "encaminhei" vs "encaminhar"
 - "verifiquei" vs "verificar"
 
-Testa tanto a função pública `detectar_hallucination` (com AIMessage reais)
-quanto os patterns regex diretamente.
+Testa os patterns regex diretamente e o guardrail preventivo `checar_resposta_pre_envio`.
 """
 
 import re
 from unittest.mock import MagicMock
 
-from core.hallucination import detectar_hallucination, inferir_destino_do_texto, _HALL_CHECKS
+from core.hallucination import inferir_destino_do_texto, _HALL_CHECKS
 
 
 # ── Helpers ──
@@ -24,22 +23,6 @@ def _detecta(resposta: str, tool_name: str) -> bool:
         if tn == tool_name:
             return any(re.search(f, resp_lower) for f in frases)
     return False
-
-
-def _make_ai_message(content: str, tool_calls=None):
-    """Cria AIMessage mock com content e tool_calls."""
-    msg = MagicMock()
-    msg.content = content
-    msg.tool_calls = tool_calls or []
-    type(msg).__name__ = "AIMessage"
-    # Para isinstance check funcionar
-    return msg
-
-
-def _patch_isinstance():
-    """Patch para isinstance funcionar com mocks no detectar_hallucination."""
-    from langchain_core.messages import AIMessage
-    return AIMessage
 
 
 # ── Testes de Regex (unitários puros) ──
@@ -108,42 +91,6 @@ def test_hallucination_encontrei_no_sistema():
 
 def test_falso_positivo_encontrei_generico():
     assert not _detecta("Não encontrei nada com esse CPF.", "consultar_cliente")
-
-
-# ── Testes da função detectar_hallucination (integração com AIMessage) ──
-
-def test_detectar_hallucination_com_tool_chamada():
-    """Se tool foi chamada, NÃO é hallucination mesmo com texto."""
-    from langchain_core.messages import AIMessage
-
-    msg_com_tool = AIMessage(content="", tool_calls=[{"name": "transferir_departamento", "args": {}, "id": "1"}])
-    msg_resposta = AIMessage(content="Já transferi você para o financeiro.")
-    result = detectar_hallucination([msg_com_tool, msg_resposta], "5565999990000")
-    assert "transferir_departamento" not in result
-
-
-def test_detectar_hallucination_sem_tool_chamada():
-    """Se tool NÃO foi chamada mas texto afirma, É hallucination."""
-    from langchain_core.messages import AIMessage
-
-    msg = AIMessage(content="Já transferi você para o financeiro.")
-    result = detectar_hallucination([msg], "5565999990000")
-    assert "transferir_departamento" in result
-
-
-def test_detectar_hallucination_texto_limpo():
-    """Texto normal sem afirmação de ação → sem hallucination."""
-    from langchain_core.messages import AIMessage
-
-    msg = AIMessage(content="Olá! Como posso te ajudar?")
-    result = detectar_hallucination([msg], "5565999990000")
-    assert result == []
-
-
-def test_detectar_hallucination_mensagem_vazia():
-    """Lista vazia → sem hallucination."""
-    result = detectar_hallucination([], "5565999990000")
-    assert result == []
 
 
 # ── Testes de inferir_destino_do_texto (contingência hallucination) ──

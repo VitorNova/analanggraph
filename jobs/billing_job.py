@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from infra.supabase import get_supabase
+from infra.incidentes import registrar_incidente
 from core.constants import TABLE_LEADS, TABLE_ASAAS_CLIENTES, TABLE_ASAAS_COBRANCAS
 
 # UUID do agente Ana na tabela agents (usado em asaas_cobrancas.agent_id)
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Régua de cobrança: offsets em dias úteis onde envia
 SCHEDULE = [0, 1, 3, 5, 7, 10, 15]
+SCHEDULE_EXTENDED_INTERVAL = 5  # A cada 5 dias úteis após max(SCHEDULE) — modo log-only por enquanto
 
 # Mapeamento: tipo de disparo → template oficial WhatsApp (nome no Meta)
 # Params são sempre: [nome, valor, vencimento, link] na ordem {{1}}..{{4}}
@@ -87,10 +89,13 @@ def buscar_elegiveis(hoje: date) -> list:
     """Busca cobranças elegíveis para disparo hoje."""
     supabase = get_supabase()
     if not supabase:
+        logger.error("[BILLING] Supabase indisponível — impossível buscar cobranças")
+        registrar_incidente("BILLING_SYSTEM", "billing_supabase_fora", "get_supabase() retornou None")
         return []
 
-    # Janela: D-2 a D+15 a partir de hoje
-    min_date = (hoje - timedelta(days=20)).isoformat()  # margem para dias úteis
+    # Janela dinâmica: max(SCHEDULE) * 1.6 dias corridos (cobre feriados)
+    _janela_dias = int(max(SCHEDULE) * 1.6)
+    min_date = (hoje - timedelta(days=_janela_dias)).isoformat()
     max_date = (hoje + timedelta(days=5)).isoformat()
 
     try:
@@ -115,26 +120,68 @@ def buscar_elegiveis(hoje: date) -> list:
         cliente_map = {c["id"]: c for c in (clientes.data or [])}
 
         elegiveis = []
+        skips = {
+            "cliente_ausente": 0,
+            "telefone_invalido": 0,
+            "fora_do_schedule": 0,
+            "vencimento_fds": 0,
+            "sem_link": 0,
+            "schedule_estendido_candidato": 0,
+        }
+
         for cob in pending.data:
             cliente = cliente_map.get(cob["customer_id"])
             if not cliente:
+                skips["cliente_ausente"] += 1
+                logger.warning(
+                    f"[BILLING] Cobrança {cob['id']} — cliente {cob['customer_id']} não encontrado em asaas_clientes"
+                )
+                registrar_incidente(
+                    cob.get("customer_id", "?"),
+                    "billing_cliente_ausente",
+                    f"Cobrança {cob['id']} com customer_id={cob['customer_id']} sem registro em asaas_clientes"
+                )
                 continue
 
             phone = cliente.get("mobile_phone", "")
             if not phone or len(phone) < 10:
+                skips["telefone_invalido"] += 1
+                logger.warning(
+                    f"[BILLING] Cobrança {cob['id']} — telefone inválido '{phone}' para cliente {cob['customer_id']}"
+                )
                 continue
 
             due = date.fromisoformat(cob["due_date"][:10])
             offset = count_business_days(due, hoje)
 
             if offset not in SCHEDULE:
+                # Schedule estendido: offset > max e múltiplo de 5 → log-only (Fase 2)
+                if offset > max(SCHEDULE) and (offset - max(SCHEDULE)) % SCHEDULE_EXTENDED_INTERVAL == 0:
+                    skips["schedule_estendido_candidato"] += 1
+                    logger.info(
+                        f"[BILLING] Cobrança {cob['id']} offset={offset} — candidata a schedule estendido (log-only)"
+                    )
+                else:
+                    skips["fora_do_schedule"] += 1
+                continue
+
+            # Vencimento no fim de semana: offset=0 mas due != hoje
+            # Não disparar "vence hoje" — será capturado como overdue na segunda
+            if offset == 0 and due != hoje:
+                skips["vencimento_fds"] += 1
                 continue
 
             template_key = get_template_key(offset)
 
             link = cob.get("invoice_url") or ""
             if not link:
+                skips["sem_link"] += 1
                 logger.warning(f"[BILLING] Cobrança {cob['id']} sem link de pagamento, pulando")
+                registrar_incidente(
+                    phone or cob.get("customer_id", "?"),
+                    "billing_sem_link",
+                    f"Cobrança {cob['id']} sem invoice_url (offset={offset})"
+                )
                 continue
 
             nome = cliente.get("name", "Cliente")
@@ -156,6 +203,14 @@ def buscar_elegiveis(hoje: date) -> list:
                 "offset": offset,
                 "nome": nome,
             })
+
+        # Sumário de filtro
+        total_cobrancas = len(pending.data)
+        total_skips = sum(skips.values())
+        logger.info(
+            f"[BILLING] Filtro: {total_cobrancas} cobranças → {len(elegiveis)} elegíveis "
+            f"({total_skips} filtradas: {skips})"
+        )
 
         return elegiveis
 
@@ -189,9 +244,52 @@ async def run_billing():
         return
 
     try:
+        # Heartbeat check: alertar se último heartbeat > 49h
+        last_hb = await redis.client.get("heartbeat:billing_job")
+        if last_hb:
+            if isinstance(last_hb, bytes):
+                last_hb = last_hb.decode()
+            try:
+                last_dt = datetime.fromisoformat(last_hb)
+                gap_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                if gap_hours > 49:
+                    logger.error(f"[BILLING] ALERTA: último heartbeat há {gap_hours:.0f}h — job pode ter falhado")
+                    registrar_incidente(
+                        "BILLING_SYSTEM", "billing_heartbeat_gap",
+                        f"Último heartbeat há {gap_hours:.0f}h. Job pode não ter rodado."
+                    )
+            except (ValueError, TypeError):
+                pass
+
         logger.info("[BILLING] Iniciando")
         elegiveis = buscar_elegiveis(hoje)
         logger.info(f"[BILLING] {len(elegiveis)} elegíveis")
+
+        # R6: zero elegíveis com cobranças no banco = anomalia
+        if len(elegiveis) == 0:
+            sb = get_supabase()
+            if sb:
+                try:
+                    check = sb.table(TABLE_ASAAS_COBRANCAS).select(
+                        "id", count="exact"
+                    ).in_(
+                        "status", ["PENDING", "OVERDUE"]
+                    ).is_("deleted_at", "null").execute()
+                    total_no_banco = check.count or 0
+                    if total_no_banco > 0:
+                        logger.warning(
+                            f"[BILLING] 0 elegíveis mas {total_no_banco} cobranças PENDING/OVERDUE no banco"
+                        )
+                        registrar_incidente(
+                            "BILLING_SYSTEM",
+                            "billing_zero_elegiveis",
+                            f"0 elegíveis em {hoje.isoformat()} mas {total_no_banco} cobranças no banco. "
+                            f"Verificar filtros (janela, SCHEDULE, telefone, invoice_url)."
+                        )
+                    else:
+                        logger.info("[BILLING] 0 elegíveis — banco sem cobranças pendentes (normal)")
+                except Exception as e:
+                    logger.warning(f"[BILLING] Falha ao verificar cobranças no banco: {e}")
 
         enviados = 0
         erros = 0
@@ -204,12 +302,20 @@ async def run_billing():
             except Exception as e:
                 erros += 1
                 logger.error(f"[BILLING] Erro: {e}", exc_info=True)
-                from infra.incidentes import registrar_incidente
                 registrar_incidente(item.get("phone", "?"), "billing_erro", str(e)[:300])
 
         logger.info(f"[BILLING] Concluído: enviados={enviados} erros={erros}")
 
     finally:
+        # Heartbeat: gravar timestamp para detectar se job parou de rodar
+        try:
+            await redis.client.set(
+                "heartbeat:billing_job",
+                datetime.now(timezone.utc).isoformat(),
+                ex=90000,  # TTL 25h
+            )
+        except Exception:
+            pass
         await redis.client.delete(lock_key)
 
 
@@ -328,7 +434,16 @@ async def _processar_disparo(item: dict, redis) -> bool:
     ):
         logger.error(f"[BILLING:{phone}] Falha ao enviar template '{wa_template}'")
         log_event("billing_error", phone, reason="template_failed", template=item.get("template_key"))
-        await redis.client.set(dedup_key, "1", ex=86400)
+        registrar_incidente(phone, "billing_envio_falhou", f"Template {wa_template} falhou para cobrança {reference_id}")
+        # Marcar delivery_failed no histórico (best effort)
+        try:
+            history["messages"][-1]["delivery_failed"] = True
+            supabase.table(TABLE_LEADS).update({
+                "conversation_history": history,
+            }).eq("id", lead["id"]).execute()
+        except Exception:
+            pass
+        # NÃO marcar dedup — permitir retry na próxima execução
         return False
 
     # Marcar ia_cobrou na asaas_cobrancas (para o painel Cobranças & Pagamentos)
