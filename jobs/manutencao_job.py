@@ -1,10 +1,11 @@
-"""Job de Manutenção Preventiva — Lembrete D-7.
+"""Job de Manutenção Preventiva.
 
-Busca contratos com proxima_manutencao = hoje + 7 dias
+Busca contratos com proxima_manutencao entre hoje e hoje+7 dias
 e envia lembrete via WhatsApp com dados do equipamento.
+Também recupera contratos atrasados (até 30 dias, cap 5/dia).
 
-Salva contexto "manutencao_preventiva" no histórico para que
-o context_detector saiba que o lead está respondendo sobre manutenção.
+Salva contexto "manutencao_preventiva" ou "manutencao_atrasada"
+no histórico para que o context_detector diferencie o cenário.
 
 Uso:
     python jobs/manutencao_job.py           # Roda manualmente
@@ -45,21 +46,26 @@ TEMPLATE_HISTORICO = (
 )
 
 
-def buscar_contratos_d7(hoje: date) -> list:
-    """Busca contratos com manutenção prevista para daqui 7 dias."""
+def buscar_contratos_elegiveis(hoje: date) -> list:
+    """Busca contratos com manutenção prevista entre hoje e hoje+7 dias."""
     supabase = get_supabase()
     if not supabase:
         return []
 
-    data_alvo = (hoje + timedelta(days=7)).isoformat()
+    data_inicio = hoje.isoformat()
+    data_fim = (hoje + timedelta(days=7)).isoformat()
 
     try:
         result = supabase.table(TABLE_CONTRACT_DETAILS).select(
             "id, customer_id, locatario_nome, locatario_telefone, "
             "equipamentos, endereco_instalacao, proxima_manutencao, "
             "maintenance_status"
-        ).eq(
-            "proxima_manutencao", data_alvo
+        ).gte(
+            "proxima_manutencao", data_inicio
+        ).lte(
+            "proxima_manutencao", data_fim
+        ).neq(
+            "maintenance_status", "notified"
         ).is_(
             "deleted_at", "null"
         ).execute()
@@ -92,7 +98,9 @@ def buscar_contratos_d7(hoje: date) -> list:
             equipamentos = contrato.get("equipamentos") or []
             if equipamentos and isinstance(equipamentos, list):
                 eq = equipamentos[0]
-                equipamento_str = f"{eq.get('marca', '?')} {eq.get('btus', '?')} BTUs"
+                marca = eq.get('marca') or eq.get('modelo') or 'Split'
+                btus = eq.get('btus') or '?'
+                equipamento_str = f"{marca} {btus} BTUs"
                 if len(equipamentos) > 1:
                     equipamento_str += f" (+{len(equipamentos)-1} equipamento(s))"
             else:
@@ -128,6 +136,105 @@ def buscar_contratos_d7(hoje: date) -> list:
         return []
 
 
+def buscar_contratos_atrasados(hoje: date, max_dias: int = 30, limite: int = 5) -> list:
+    """Busca contratos com manutenção atrasada (data passada, não notificados).
+
+    Recupera contratos que o job perdeu por fim de semana, feriado ou erro.
+    Limita a `limite` por execução para não enviar spam.
+    """
+    supabase = get_supabase()
+    if not supabase:
+        return []
+
+    data_limite = (hoje - timedelta(days=max_dias)).isoformat()
+
+    try:
+        result = supabase.table(TABLE_CONTRACT_DETAILS).select(
+            "id, customer_id, locatario_nome, locatario_telefone, "
+            "equipamentos, endereco_instalacao, proxima_manutencao, "
+            "maintenance_status"
+        ).lt(
+            "proxima_manutencao", hoje.isoformat()
+        ).gte(
+            "proxima_manutencao", data_limite
+        ).neq(
+            "maintenance_status", "notified"
+        ).neq(
+            "maintenance_status", "done"
+        ).is_(
+            "deleted_at", "null"
+        ).order(
+            "proxima_manutencao", desc=True
+        ).limit(20).execute()
+
+        if not result.data:
+            return []
+
+        # Reusar a mesma lógica de formatação de buscar_contratos_elegiveis
+        # mas com context_type diferenciado e dedup por customer_id
+        vistos = set()
+        elegiveis = []
+
+        for contrato in result.data:
+            customer_id = contrato.get("customer_id")
+            if customer_id in vistos:
+                continue
+
+            phone = contrato.get("locatario_telefone")
+            if not phone:
+                if customer_id:
+                    cliente = supabase.table(TABLE_ASAAS_CLIENTES).select(
+                        "mobile_phone"
+                    ).eq("id", customer_id).limit(1).execute()
+                    if cliente.data:
+                        phone = cliente.data[0].get("mobile_phone")
+
+            if not phone or len(phone) < 10:
+                logger.warning(f"[MANUTENCAO] Contrato atrasado {contrato['id']} sem telefone válido")
+                continue
+
+            equipamentos = contrato.get("equipamentos") or []
+            if equipamentos and isinstance(equipamentos, list):
+                eq = equipamentos[0]
+                marca = eq.get('marca') or eq.get('modelo') or 'Split'
+                btus = eq.get('btus') or '?'
+                equipamento_str = f"{marca} {btus} BTUs"
+                if len(equipamentos) > 1:
+                    equipamento_str += f" (+{len(equipamentos)-1} equipamento(s))"
+            else:
+                equipamento_str = "Ar-condicionado"
+
+            nome = contrato.get("locatario_nome", "Cliente")
+            primeiro_nome = nome.split()[0] if nome else "Cliente"
+            endereco = contrato.get("endereco_instalacao", "Endereço não informado")
+
+            template_params = [primeiro_nome, equipamento_str, endereco]
+            message = TEMPLATE_HISTORICO.format(
+                nome=primeiro_nome,
+                equipamento=equipamento_str,
+                endereco=endereco,
+            )
+
+            vistos.add(customer_id)
+            elegiveis.append({
+                "phone": phone,
+                "message": message,
+                "contract_id": contrato["id"],
+                "context_type": "manutencao_atrasada",
+                "template_params": template_params,
+                "nome": nome,
+            })
+
+            if len(elegiveis) >= limite:
+                break
+
+        return elegiveis
+
+    except Exception as e:
+        logger.exception("[MANUTENCAO] Falha ao buscar contratos atrasados")
+        return []
+
+
 async def run_manutencao():
     """Entry point do job de manutenção."""
     from infra.redis import get_redis_service
@@ -153,7 +260,11 @@ async def run_manutencao():
 
     try:
         logger.info("[MANUTENCAO] Iniciando")
-        elegiveis = buscar_contratos_d7(hoje)
+        elegiveis = buscar_contratos_elegiveis(hoje)
+        atrasados = buscar_contratos_atrasados(hoje, max_dias=30, limite=5)
+        if atrasados:
+            logger.info(f"[MANUTENCAO] {len(atrasados)} contratos atrasados recuperados")
+            elegiveis.extend(atrasados)
         logger.info(f"[MANUTENCAO] {len(elegiveis)} contratos para notificar")
 
         enviados = 0
@@ -252,15 +363,6 @@ async def _processar_notificacao(item: dict, redis) -> bool:
         "updated_at": now,
     }).eq("id", lead["id"]).execute()
 
-    # Marcar contrato como notificado
-    try:
-        supabase.table(TABLE_CONTRACT_DETAILS).update({
-            "maintenance_status": "notified",
-            "notificacao_enviada_at": now,
-        }).eq("id", contract_id).execute()
-    except Exception as e:
-        logger.warning(f"[MANUTENCAO:{phone}] Erro ao marcar contrato: {e}")
-
     # Enviar template via Leadbox (1 POST: Leadbox → Meta → WhatsApp)
     from infra.leadbox_client import enviar_template_leadbox
 
@@ -275,8 +377,17 @@ async def _processar_notificacao(item: dict, redis) -> bool:
         await redis.client.set(dedup_key, "1", ex=86400)
         return False
 
+    # Marcar contrato como notificado SÓ APÓS envio bem-sucedido
+    try:
+        supabase.table(TABLE_CONTRACT_DETAILS).update({
+            "maintenance_status": "notified",
+            "notificacao_enviada_at": now,
+        }).eq("id", contract_id).execute()
+    except Exception as e:
+        logger.warning(f"[MANUTENCAO:{phone}] Erro ao marcar contrato: {e}")
+
     await redis.client.set(dedup_key, "1", ex=86400)
-    logger.info(f"[MANUTENCAO:{phone}] Notificação D-7 enviada (contrato={contract_id})")
+    logger.info(f"[MANUTENCAO:{phone}] Notificação enviada (contrato={contract_id})")
     log_event("manutencao_sent", phone, contract_id=contract_id)
     return True
 

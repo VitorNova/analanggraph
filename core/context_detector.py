@@ -19,6 +19,7 @@ CONTEXT_MAPPING = {
     "disparo_billing": "billing",
     "disparo_cobranca": "billing",
     "manutencao_preventiva": "manutencao",
+    "manutencao_atrasada": "manutencao",
     "disparo_manutencao": "manutencao",
     "manutencao": "manutencao",
 }
@@ -114,13 +115,14 @@ Ele está respondendo sobre AGENDAMENTO DE MANUTENÇÃO.
 
 REGRAS PARA ESTE CONTEXTO:
 - NÃO peça CPF — o lead já está identificado
-- NÃO use nenhuma tool (nem transferir_departamento, nem consultar_cliente)
-- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → diga que a equipe técnica já vai entrar em contato para resolver. NÃO peça CPF, NÃO consulte.
-- Se o cliente ACEITAR ou RESPONDER sobre agendamento (mencionar dia, horário, "pode ser", "sim", "quero agendar", saudação, áudio, ou QUALQUER confirmação de interesse) → diga que a equipe já vai entrar em contato para agendar a visita. NÃO tente agendar sozinha, NÃO pergunte dia/horário, NÃO confirme data/hora. Apenas avise que a equipe entra em contato.
-- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok") → diga "tudo bem" e avise que a equipe entra em contato se precisar. NÃO insista.
-- Se perguntar se é PAGO ou quanto custa → responda que é GRATUITA (inclusa no contrato) e pergunte se quer agendar
+- NÃO use consultar_cliente — não é necessário
+- Se o cliente ACEITAR, RESPONDER ou SAUDAR (mencionar dia, horário, "pode ser", "sim", "quero agendar", "oi", "olá", "bom dia", "boa tarde", saudação, áudio, ou QUALQUER confirmação de interesse) → responda "A equipe técnica já vai entrar em contato pra agendar a manutenção!" E chame transferir_departamento(destino="atendimento"). NÃO tente agendar sozinha, NÃO pergunte dia/horário, NÃO confirme data/hora.
+- Se o cliente mencionar DEFEITO (ar fazendo barulho, pingando, não gelando, parou, quebrado, não liga, não esfria, vazando) → responda "A equipe técnica já vai entrar em contato pra resolver!" E chame transferir_departamento(destino="atendimento"). NÃO peça CPF, NÃO consulte.
+- Se RECUSAR a manutenção ("não preciso", "não quero", "tá tudo ok") → diga "tudo bem" e avise que a equipe entra em contato se precisar. NÃO transfira, NÃO insista.
+- Se perguntar se é PAGO ou quanto custa → responda que é GRATUITA (inclusa no contrato) e pergunte se quer agendar. NÃO transfira ainda.
 - Manutenção preventiva é GRATUITA (inclusa no contrato)
 - NUNCA use a palavra "transferir" — diga "a equipe já vai entrar em contato"
+- OBRIGATÓRIO: em TODOS os casos acima (exceto recusa e dúvida sobre preço), você DEVE chamar transferir_departamento(destino="atendimento"). Se não chamar, o cliente fica sem atendimento.
 """
 
     return ""
