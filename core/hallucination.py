@@ -9,6 +9,8 @@ import logging
 import re
 from typing import Optional
 
+from core.constants import QUEUE_ATENDIMENTO, QUEUE_FINANCEIRO, QUEUE_BILLING
+
 logger = logging.getLogger(__name__)
 
 _HALL_CHECKS = [
@@ -65,7 +67,7 @@ def detectar_tool_como_texto(resposta: str) -> Optional[dict]:
 
     # Destinos válidos para mapeamento
     _DESTINOS_VALIDOS = {"atendimento", "financeiro", "cobrancas", "lazaro"}
-    _QUEUE_TO_DESTINO = {"453": "atendimento", "454": "financeiro", "544": "cobrancas"}
+    _QUEUE_TO_DESTINO = {str(QUEUE_ATENDIMENTO): "atendimento", str(QUEUE_FINANCEIRO): "financeiro", str(QUEUE_BILLING): "cobrancas"}
 
     # === DETECÇÃO 1: formato função — tool_name(args) ===
     match = re.search(
@@ -119,6 +121,46 @@ def detectar_tool_como_texto(resposta: str) -> Optional[dict]:
         if destino:
             logger.warning(f"[HALLUCINATION:transferir_departamento] Tool como texto (formato narrativo): {resposta[:100]}")
             return {"tool": "transferir_departamento", "destino": destino}
+
+    return None
+
+
+_RECUSA_PATTERNS = [
+    "tudo bem", "não preciso", "não quero", "tá tudo ok",
+    "nao preciso", "nao quero", "ta tudo ok", "não, obrigado",
+    "nao obrigado", "tudo certo", "não é necessário", "nao e necessario",
+]
+
+
+def checar_contexto_sem_tool(
+    context_type: Optional[str],
+    content: str,
+    tool_names_in_session: set[str],
+) -> Optional[tuple[str, str]]:
+    """Checa se o contexto exige tool que o LLM não chamou.
+
+    Diferente de checar_resposta_pre_envio (detecta hallucination de TEXTO),
+    esta detecta OMISSÃO: contexto exige ação, LLM respondeu sem agir.
+
+    Args:
+        context_type: "billing", "manutencao" ou None.
+        content: Texto da resposta do LLM.
+        tool_names_in_session: Tools já chamadas nesta sessão.
+
+    Returns:
+        (tool_name, destino) se violação detectada, None se OK.
+    """
+    if not context_type or not content:
+        return None
+
+    if context_type == "manutencao":
+        if "transferir_departamento" in tool_names_in_session:
+            return None  # já transferiu, OK
+        # Único caso que NÃO precisa transferir: cliente recusou
+        content_lower = content.lower()
+        if any(p in content_lower for p in _RECUSA_PATTERNS):
+            return None
+        return ("transferir_departamento", "atendimento")
 
     return None
 

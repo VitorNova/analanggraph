@@ -27,8 +27,10 @@ from langgraph.prebuilt import InjectedState
 
 logger = logging.getLogger(__name__)
 
-# Tabela de leads no Supabase
-TABLE_LEADS = "ana_leads"
+from core.constants import (
+    TABLE_LEADS, QUEUE_ATENDIMENTO, QUEUE_FINANCEIRO, QUEUE_BILLING,
+    USER_NATHALIA, USER_LAZARO, USER_TIELI,
+)
 
 
 # =============================================================================
@@ -275,20 +277,12 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
 # TOOL 2: TRANSFERIR DEPARTAMENTO
 # =============================================================================
 
-# Mapeamento de destinos para validação e logs
-DESTINOS_TRANSFERENCIA = {
-    (453, 815): "Nathália (Atendimento)",
-    (453, 813): "Lázaro (Dono)",
-    (454, 814): "Tieli (Financeiro)",
-    (544, 814): "Tieli (Cobranças)",
-}
-
 # Mapeamento destino → (queue_id, user_id, nome) — usado pela tool e pelo interceptor
 MAPA_DESTINOS = {
-    "atendimento": (453, 815, "Nathália (Atendimento)"),
-    "financeiro": (454, 814, "Tieli (Financeiro)"),
-    "cobrancas": (544, 814, "Tieli (Cobranças)"),
-    "lazaro": (453, 813, "Lázaro (Dono)"),
+    "atendimento": (QUEUE_ATENDIMENTO, USER_NATHALIA, "Nathália (Atendimento)"),
+    "financeiro": (QUEUE_FINANCEIRO, USER_TIELI, "Tieli (Financeiro)"),
+    "cobrancas": (QUEUE_BILLING, USER_TIELI, "Tieli (Cobranças)"),
+    "lazaro": (QUEUE_ATENDIMENTO, USER_LAZARO, "Lázaro (Dono)"),
 }
 
 

@@ -56,7 +56,7 @@ def upsert_lead(telefone: str, nome: str = None) -> Optional[str]:
         return None
 
 
-def salvar_mensagem(telefone: str, content: str, direction: str, lead_id: str = None):
+def salvar_mensagem(telefone: str, content: str, direction: str):
     """Salva mensagem no conversation_history da tabela ana_leads."""
     supabase = get_supabase()
     if not supabase:
