@@ -43,6 +43,115 @@ Formato: data, problema/feature, solução, arquivos. Leia antes de qualquer tar
 
 ## Registro de correcoes
 
+### [05/05/2026] Review senior + 5 fixes da análise de erros semanal (28/04–05/05)
+
+- **Contexto:** Análise em `docs/ANALISE_ERROS_SEMANA_20260505.md` identificou 7 erros reais em produção. Review como senior validou TODOS os diagnósticos como corretos. Guardrail antierro NÃO causou nenhum dos erros.
+- **Erros identificados:** (1) Quota Gemini 429 — 4 leads sem resposta, (2) Transfer "duplicada" no histórico — 3 leads, (3) Resposta vazia — extrator descartava texto válido, (4) Snooze ignorado — mismatch DDI telefone, (5) IA tratou empresa como pessoa, (6) IA não consultou CPF quando devia, (7) Gemini 400 — histórico corrompido.
+
+**FIX 3 — Normalizar telefone DDI no billing_job (PRIORIDADE 1)**
+- **Arquivo:** `jobs/billing_job.py` L330-333, L336, L342-346, L361, L372
+- **Bug:** `asaas_clientes` armazena telefone sem DDI (`"66992402027"`), webhook grava com DDI (`"556692402027"`). O `_processar_disparo` usava `phone` raw do Asaas para checar snooze no Redis e Supabase — nunca encontrava o snooze gravado pelo webhook. Cliente DIELY recebeu 3 cobranças após prometer pagamento.
+- **Fix:** Adicionado normalização DDI logo após `clean_phone` (L331-333): se 10 ou 11 dígitos, prepend "55". Trocado `phone` por `clean_phone` em: `redis.is_paused()`, `redis.is_snoozed()`, `redis.snooze_get()`, `redis.snooze_set()`, e `dedup_key`.
+- **Bônus — fail-safe:** O `except Exception` do snooze DB check (L368-369) era fail-open (continuava e disparava). Mudado para `return False` — se snooze check falhar, NÃO dispara (fail-safe).
+- **Validação:** Com DDI normalizado, snooze de DIELY (gravado em `556692402027`) seria encontrado pelo billing_job (que antes buscava `66992402027`).
+
+**FIX 1 — Extrator de resposta não descarta texto com tool_calls (PRIORIDADE 2)**
+- **Arquivo:** `core/grafo.py` L596-617
+- **Bug:** Bloco `# 8. Extrair resposta final` tinha `if msg.tool_calls: continue` — descartava AIMessage com texto válido ("Recebido") quando Gemini retornava texto + tool_call na mesma mensagem. Como TODAS as AIMessages do Erick tinham tool_calls, `resposta = None` → fallback genérico.
+- **Fix:** Sistema de dual-priority: itera reverso, prioriza AIMessage SEM tool_calls (resposta pura). Se nenhuma existir, usa `resposta_com_tool` (primeira AIMessage COM tool_calls que tem texto útil). Mantém filtro de triviais (pontuação solta, len<=2).
+- **Validação:** Erick teria recebido "Recebido" em vez de fallback. Cenários `pede_boleto_com_cpf` e `pergunta_contrato_com_cpf` passam no simulator.
+
+**FIX 2 — Não salvar tool_calls não-executados no histórico (PRIORIDADE 3)**
+- **Arquivo:** `core/grafo.py` L576-590 (após extração de `novas_mensagens`)
+- **Bug:** Quando `route_model_output` retorna END (ex: transferência já feita, guard anti-loop), a última AIMessage com tool_calls NÃO era executada mas ERA salva no histórico por `salvar_mensagens_agente`. Poluía histórico e meses depois Gemini rejeitava sequência inválida (AIMessage com tool_calls sem ToolMessage correspondente) → erro 400.
+- **Fix:** Após `novas_mensagens = result["messages"][qtd_enviadas:]`, verifica se última msg é AIMessage com tool_calls. Se sim, checa se existe ToolMessage com `tool_call_id` correspondente em `novas_mensagens`. Se não existe → remove (não foi executada).
+- **Validação:** Histórico de Sthephanny/Erick/Eidima não teria tool_calls fantasma. Previne Gemini 400 futuro.
+
+**FIX 5 — Prompt: CPF fornecido → SEMPRE consultar antes de transferir**
+- **Arquivo:** `core/prompts.py` — regra 12 nas REGRAS ABSOLUTAS
+- **Bug:** Eidima forneceu CPF `86685961287` + pergunta sobre contrato, Ana transferiu direto sem consultar. Gemini optou pelo caminho curto porque não havia regra explícita. Guardrail antierro não detecta OMISSÃO (só detecta AFIRMAÇÃO sem tool).
+- **Fix:** Adicionado: "Quando o cliente fornecer CPF (formato XXX.XXX.XXX-XX ou 11 dígitos seguidos), SEMPRE chame consultar_cliente ANTES de qualquer outra ação. Nunca transfira sem consultar primeiro quando o CPF está disponível."
+
+**FIX 6 — Prompt: usar nome da pessoa, não razão social**
+- **Arquivo:** `core/prompts.py` — na seção de tom/estilo (L228-229)
+- **Bug:** Nutrimais — `consultar_cliente` retorna `nome` do Asaas que é razão social ("NUTRIMAIS COMERCIAL LTDA"). Ana cumprimentou "Oi, NUTRIMAIS COMERCIAL LTDA!".
+- **Fix:** Adicionado: "Se o nome retornado por consultar_cliente for CAIXA ALTA ou contiver 'LTDA', 'EIRELI', 'ME', 'SA' — é razão social de empresa. Use o primeiro nome do lead (da conversa) em vez da razão social para se dirigir ao cliente."
+
+**FIX 4 — DESCARTADO (sanitizar histórico antigo)**
+- **Motivo:** `infra/nodes_supabase.py:135-188` já tem validador de sequência que remove ToolMessages órfãs e blocos incompletos. O FIX 2 resolve na origem (não salva mais tool_calls não-executados). Redundante.
+
+**FIX 7 — PENDENTE (simplificar guardrail)**
+- **Motivo:** 0 incidentes de hallucination esta semana com Gemini 2.5 Pro. Monitorar até ~19/05. Se continuar zero, remover camadas 2 (retry) e 3 (tool_call sintético).
+
+- **Testes pós-fix:**
+  - `pytest tests/` → 156 passed, 0 failed (zero regressão)
+  - `lead-simulator` → 28/36 PASS (8 FAILs pré-existentes: `preco_quarto`, `aluguel_sem_contrato`, `interesse_fechar`, `cancelamento_hipotetico`, `manutencao_agendar`, `manutencao_recusa`, `cliente_nome_sem_cpf_transfere`, `duvida_tecnica_voltagem` — todos por comportamento do LLM, não dos fixes)
+- **Achado extra do review:** `billing_job.py:383-386` já tinha dual-lookup telefone (com/sem 55) para SALVAR CONTEXTO, mas o snooze check anterior não usava. Evidência de que o bug de DDI já foi parcialmente percebido antes mas corrigido só no passo errado.
+- **Status:** Fixes aplicados, NÃO deployados. Falta PM2 restart.
+
+### [04/05/2026] Ajuste manual contract_details — ALLISON, patrimônios órfãos
+
+- **Demanda:** Lázaro reportou no grupo IA-asaas-conferências que patrimônios 0005, 0110 e Tabacaria OASYS "não estão na IA". Enviou PDF do contrato Lara Almeida 716-1 e Termo de Encerramento Parcial do contrato 418-1 (ALLISON).
+- **Investigação:** ALLISON tinha 3 assinaturas: `sub_lr31zvlcoab2kfdp` (R$378, INACTIVE del 27/04), `sub_113bzapl9hsxkqzc` (R$598, INACTIVE del 30/04), `sub_cwjd7rlfbegzoqk7` (R$189, ACTIVE). A nova assinatura não tinha `contract_details` porque o PDF anexado era um Termo de Encerramento Parcial (não contrato padrão) — parser do lazaro-real não reconheceu.
+- **Termo de Encerramento Parcial 418-1:** Devolveu patrimônio 0500 (TECHFRIO), manteve patrimônio 0005 (AGRATTO), mudou endereço para R. A-25 nº 253, Parque Sagrada Família.
+- **Ações:**
+  1. Criado `contract_details` 418-2 para `sub_cwjd7rlfbegzoqk7` (R$189, patrimônio 0005, endereço novo)
+  2. Soft-deleted `contract_details` 418-1 (assinatura deletada, patrimônio 0500 devolvido)
+  3. Soft-deleted `contract_details` 174-2 (assinatura deletada, patrimônios 0110+0108 reorganizados)
+- **Resolvido:** Patrimônio 0005 (ALLISON), 0108 (Tabacaria OASYS 720-1 já ok), 0155 (Lara Almeida 716-1 já ok)
+- **Pendente:** Patrimônio 0110 (DAIKIN 18000 BTU) — assinatura antiga deletada, nenhuma nova criada. Lázaro precisa informar destino.
+
+### [04/05/2026] Fix: Ana agrupava cobranças de mesmo vencimento (omitia links)
+
+- **Problema:** Nathália reportou que Andrea Cosme tem 3 cobranças (R$189 venc 05/05, R$149 venc 10/05, R$149 venc 10/05), mas Ana listou só 2 links — agrupou as duas de 10/05 como uma só. Bug de apresentação do LLM, não de billing (zero impacto financeiro).
+- **Causa raiz:** (1) Prompt sem instrução anti-agrupamento. (2) Instrução da tool dizia "pergunte se deseja o boleto de algum mês específico" — induzia LLM a agrupar por mês. (3) Output da tool sem numeração nem identificador único entre cobranças.
+- **Fix (4 mudanças):**
+  1. `core/prompts.py` L149 — regra explícita: "liste CADA UMA individualmente, NUNCA agrupe"
+  2. `core/tools.py` L203-209 — bloco pendentes/vencidas: numeração `Cobrança {i} (#{id})` + instrução anti-agrupamento
+  3. `core/tools.py` L222-228 — bloco futuras: mesma numeração + instrução reescrita (removido "mês específico")
+  4. Sufixo do ID da cobrança `(#abc123)` em ambos os blocos para diferenciação inequívoca
+- **Review senior:** Bug classificado como apresentação LLM, não billing. P1 (instrução faltava no bloco principal) e P2 (falta de ID único) corrigidos junto.
+- **Deploy:** PM2 restart 04/05/2026.
+
+### [03/05/2026] Transcrição de áudio + reset ticket + análise conversas + doc guardrail
+
+- **Análise de conversas 02/05:** 12 leads, 10 com interação real da Ana. 4 falhas encontradas:
+  - F1 (severa): AMILTON PROTÁCIO — CPF ignorado, Ana transferiu sem chamar `consultar_cliente`
+  - F2 (média): MARIA DE FATIMA — transferência prematura ao "Oi Bom dia" (contexto antigo manutenção)
+  - F3 (média): Sterfany — consultou CPF antigo sem a cliente pedir
+  - F5 (leve): Márcia — resposta genérica a continuação de conversa
+  - F2/F3 resolvidos pelo fix de reset ao fechar ticket (histórico zerado = sem contexto antigo)
+
+### [03/05/2026] Transcrição de áudio salva no histórico + reset ao fechar ticket
+
+- **Problema 1:** Áudios do cliente eram processados pelo Gemini (base64 multimodal) mas salvos no histórico como `[Áudio enviado]` — impossível auditar o que o cliente falou.
+- **Fix 1:** `core/grafo.py` — nova função `_transcrever_audio()` usa Gemini Flash pra transcrever antes de salvar. Histórico agora salva `[Áudio transcrito: "texto"]`. Fallback mantém `[Áudio enviado]` se transcrição falhar.
+- **Problema 2:** Quando ticket fechava no Leadbox, `conversation_history` não era zerado — lead voltava com histórico antigo e Ana retomava conversa antiga. Clara (agente-langgraph) já tinha esse fix.
+- **Fix 2:** `api/webhooks/leadbox.py::handle_ticket_closed` — adicionado `conversation_history: {"messages": []}` + `transfer_reason: None` no update Supabase. Redis agora também limpa buffer, lock e contexto (além de pausa que já limpava).
+- **Arquivos:** `core/grafo.py` (`_transcrever_audio`), `api/webhooks/leadbox.py` (`handle_ticket_closed`)
+
+### [02/05/2026] Refactor: constantes em vez de IDs hardcoded + lead_id fantasma
+
+- **Problema:** `MAPA_DESTINOS` em `core/tools.py` e `_QUEUE_TO_DESTINO` em `core/hallucination.py` usavam IDs numéricos hardcoded (454, 813, 814, 453, 544) — violando a regra "nunca hardcodar IDs". As constantes `QUEUE_FINANCEIRO`, `USER_LAZARO`, `USER_TIELI` existiam em `constants.py` mas não eram importadas por ninguém. Plano de "código morto" propunha deletá-las — o fix correto era o inverso: usá-las.
+- **Fix 1:** `core/tools.py` — `MAPA_DESTINOS` agora importa e usa `QUEUE_ATENDIMENTO`, `QUEUE_FINANCEIRO`, `QUEUE_BILLING`, `USER_NATHALIA`, `USER_LAZARO`, `USER_TIELI`.
+- **Fix 2:** `core/hallucination.py` — `_QUEUE_TO_DESTINO` agora usa `str(QUEUE_ATENDIMENTO)`, `str(QUEUE_FINANCEIRO)`, `str(QUEUE_BILLING)`.
+- **Fix 3:** `infra/nodes_supabase.py` — removido parâmetro `lead_id: str = None` de `salvar_mensagem()` (nunca lido no corpo, nunca passado pelos chamadores).
+- **Commit:** `035105c` — deploy PM2 02/05/2026.
+
+### [02/05/2026] Fix: Ana omitia taxa de adesão quando cliente perguntava "tem entrada?"
+
+- **Problema:** Equipe reportou no grupo Leadbox+IA (02/05 13:16) que Ana disse "Não tem entrada!" omitindo a taxa de adesão. O prompt não mencionava adesão em nenhum lugar.
+- **Fix:** 2 inserções cirúrgicas em `core/prompts.py`: (1) seção "Taxa de Adesão" na tabela de preços (valor = 1 mensalidade, paga na assinatura, não é parcela), (2) exemplo concreto "Tem entrada?" nos exemplos de resposta.
+- **Teste:** 1 cenário no lead-simulator (`pergunta_entrada_adesao`) — PASS. Ana respondeu mencionando adesão, valor equivalente a 1 mensalidade, sem dizer "não tem entrada".
+- **Arquivo:** `core/prompts.py` (L84-87 + L259-260)
+
+### [29/04/2026] Redirecionamento para Mundial Ar (compra/peças/instalação)
+
+- **Demanda:** Lázaro pediu (vídeo+áudios WhatsApp 29/04) que a Ana passe o contato da Mundial Ar (66) 99652-0365 quando cliente quer comprar ar-condicionado, peças ou instalação avulsa — serviços que a Aluga Ar não faz.
+- **Fix:** 3 adições em `core/prompts.py`: (1) seção "Cliente quer comprar ar, peças ou instalação avulsa" com regra + número, (2) Mundial Ar nas informações da empresa, (3) exemplo de resposta.
+- **Testes:** 6 cenários ad-hoc no lead-simulator — 6/6 PASS (C1-C4 positivos + C5-C6 regressão aluguel normal).
+- **Commit:** `3af39af` — deploy PM2 29/04/2026.
+
 ### [28/04/2026] Billing risks Fase 1 — visibilidade + fix dedup + heartbeat
 
 - **Problema:** billing_job.py tinha 5 saídas silenciosas (`continue` sem log), 1 bug real (dedup marcado em falha impedia retry), e zero testes unitários. Cobranças podiam sumir sem rastro.
@@ -214,3 +323,5 @@ Formato: data, problema/feature, solução, arquivos. Leia antes de qualquer tar
 - [ ] Fase 4: limpar codigo morto de manutencao na Ana — bloco `manutencao` em context_detector.py, exemplo no prompts.py, QUEUE_MANUTENCAO em constants.py/IA_QUEUES
 - [ ] Billing Fase 2: ativar envio schedule estendido (offset > 15) — verificar logs de `schedule_estendido_candidato` após 1 semana (05/05/2026)
 - [ ] Billing Fase 4: riscos lazaro-real (webhook 500, paginação 2000, cron retry 14h) — deploy separado
+- [ ] Simplificar guardrail antierro — monitorar até ~19/05, se 0 hallucinations reais → remover camadas 2 (retry HumanMessage fake) e 3 (tool_call sintético)
+- [ ] Deploy fixes 05/05 (FIX 1/2/3/5/6) — PM2 restart ana-langgraph + ana-billing-job

@@ -33,6 +33,24 @@ TIMEZONE_OFFSET = -4  # UTC-4 (Mato Grosso)
 # Filas onde a IA responde (importado de constants)
 from core.constants import IA_QUEUES, TABLE_LEADS, QUEUE_IA, USER_IA
 from core.constants import FALLBACK_MSG
+
+# ---- Transcrição de áudio via Gemini Flash ----
+def _transcrever_audio(audio_base64: str, mime_type: str = "audio/ogg"):
+    """Transcreve áudio usando Gemini Flash. Retorna texto ou None."""
+    try:
+        import google.generativeai as genai
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content([
+            {"mime_type": mime_type, "data": __import__("base64").b64decode(audio_base64)},
+            "Transcreva este áudio literalmente em português. Retorne APENAS o texto falado, sem comentários.",
+        ])
+        texto = (response.text or "").strip()
+        if texto:
+            logger.info(f"[TRANSCRIÇÃO] OK: {texto[:80]}")
+            return texto
+    except Exception as e:
+        logger.warning(f"[TRANSCRIÇÃO] Falha: {e}")
+    return None
 MAX_TOOL_ROUNDS = 5
 ADMIN_PHONE = os.environ.get("ADMIN_PHONE")
 
@@ -203,6 +221,70 @@ async def call_model(state: State) -> dict:
                 # CAMADA 4: Fallback — substituir por mensagem segura
                 logger.warning(f"[ANTIERRO:{phone}] Retry falhou, aplicando fallback")
                 response = AIMessage(content=FALLBACK_MSG)
+
+            # =================================================================
+            # CAMADA 1b: contexto exige tool mas LLM não chamou (omissão)
+            # Ex: manutenção preventiva → LLM disse "equipe vai entrar em contato"
+            # mas não chamou transferir_departamento. Diferente da camada 1 que
+            # detecta hallucination de texto, esta detecta FALTA de ação.
+            # =================================================================
+            if not violations:
+                ctx_data_guard = _context_extra.get(state.get("phone", ""))
+                if ctx_data_guard:
+                    from core.hallucination import checar_contexto_sem_tool
+                    ctx_violation = checar_contexto_sem_tool(
+                        ctx_data_guard["type"], content_str, _tool_names_in_session,
+                    )
+                    if ctx_violation:
+                        tool_esperada, destino = ctx_violation
+                        phone = state.get("phone", "?")
+                        logger.warning(
+                            f"[ANTIERRO:{phone}] Contexto {ctx_data_guard['type']}: "
+                            f"{tool_esperada} não chamada. Retry..."
+                        )
+
+                        try:
+                            from infra.incidentes import registrar_incidente
+                            registrar_incidente(
+                                phone, "contexto_sem_tool",
+                                f"Contexto {ctx_data_guard['type']}: {tool_esperada} não chamada",
+                                {"resposta_original": content_str[:300], "acao": "retry_contexto"},
+                            )
+                        except Exception:
+                            pass
+
+                        # CAMADA 2b: Retry — devolver ao LLM com instrução de contexto
+                        messages_retry = list(messages) + [
+                            response,
+                            HumanMessage(content=(
+                                "[SISTEMA — NÃO RESPONDA A ESTA MENSAGEM COMO SE FOSSE DO CLIENTE]\n\n"
+                                "⚠️ CORREÇÃO OBRIGATÓRIA: você está em contexto de MANUTENÇÃO PREVENTIVA. "
+                                "O cliente respondeu ao aviso de manutenção. "
+                                "Você DEVE chamar transferir_departamento(destino=\"atendimento\") "
+                                "para que a Nathália (fila 453, user 815) agende a visita.\n\n"
+                                "Responda ao cliente E chame a ferramenta transferir_departamento."
+                            )),
+                        ]
+                        response = await get_model().ainvoke(messages_retry)
+
+                        if response.tool_calls:
+                            logger.info(f"[ANTIERRO:{phone}] Retry contexto corrigiu: tool chamada")
+                            return {"messages": [response]}
+
+                        # CAMADA 3b: Forçar tool_call sintético → Nathália (453/815)
+                        logger.warning(
+                            f"[ANTIERRO:{phone}] Retry contexto falhou → "
+                            f"forçando transferência → {destino}"
+                        )
+                        response = AIMessage(
+                            content="A equipe técnica já vai entrar em contato pra agendar a manutenção!",
+                            tool_calls=[{
+                                "name": "transferir_departamento",
+                                "args": {"destino": destino},
+                                "id": "antierro_contexto_manutencao",
+                            }],
+                        )
+                        return {"messages": [response]}
 
     return {"messages": [response]}
 
@@ -386,11 +468,23 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     # 3. Buscar histórico
     historico = buscar_historico(phone, limite=20)
 
-    # 4. Salvar mensagem do usuário (texto ou marcador de mídia)
+    # 4. Transcrever áudio (se houver) antes de salvar
+    audio_transcricao = None
+    if audio_base64:
+        audio_transcricao = _transcrever_audio(audio_base64, audio_mimetype)
+
+    # 5. Salvar mensagem do usuário (texto ou marcador de mídia)
     if texto:
         salvar_mensagem(phone, texto, "incoming")
     elif has_media:
-        media_label = "[Imagem enviada]" if imagem_base64 else "[Áudio enviado]" if audio_base64 else f"[Documento: {documento_nome}]"
+        if audio_base64 and audio_transcricao:
+            media_label = f'[Áudio transcrito: "{audio_transcricao}"]'
+        elif audio_base64:
+            media_label = "[Áudio enviado]"
+        elif imagem_base64:
+            media_label = "[Imagem enviada]"
+        else:
+            media_label = f"[Documento: {documento_nome}]"
         salvar_mensagem(phone, media_label, "incoming")
 
     # 5. Detectar contexto (billing/manutenção) — 1x por mensagem, não por iteração
@@ -464,9 +558,37 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
             _notificar_erro(phone, last_error)
         return
 
-    # 7. Extrair mensagens novas do agente (AIMessage + ToolMessage)
+    # 7a. Re-check pausa pós-grafo (humano pode ter assumido durante execução do LLM)
+    if await redis.is_paused(phone):
+        qtd_check = len(lang_messages)
+        novas_check = result["messages"][qtd_check:]
+        transferiu_ok = False
+        for m in novas_check:
+            if isinstance(m, ToolMessage) and m.name == "transferir_departamento":
+                transferiu_ok = "ERRO_TÉCNICO" not in (m.content or "")
+                break
+        if not transferiu_ok:
+            logger.info(f"[GRAFO:{phone}] Pausa detectada pós-grafo — abortando")
+            log_event("paused_post_graph", phone)
+            _context_extra.pop(phone, None)
+            return
+
+    # 7b. Extrair mensagens novas do agente (AIMessage + ToolMessage)
     qtd_enviadas = len(lang_messages)
     novas_mensagens = result["messages"][qtd_enviadas:]
+
+    # Remover última AIMessage se tem tool_calls não-executados (route retornou END)
+    if novas_mensagens and isinstance(novas_mensagens[-1], AIMessage):
+        last_ai = novas_mensagens[-1]
+        if last_ai.tool_calls:
+            tool_call_ids = {tc.get("id") for tc in last_ai.tool_calls}
+            has_response = any(
+                isinstance(m, ToolMessage) and m.tool_call_id in tool_call_ids
+                for m in novas_mensagens
+            )
+            if not has_response:
+                novas_mensagens = novas_mensagens[:-1]
+
     mensagens_agente = [
         m for m in novas_mensagens
         if isinstance(m, (AIMessage, ToolMessage))
@@ -485,23 +607,27 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
             break
 
     # 8. Extrair resposta final e enviar
-    # FIX-03: pular AIMessage com tool_calls (intermediária, não final)
-    # FIX-03: filtrar respostas triviais (".", "..", pontuação solta)
+    # Prioridade: AIMessage SEM tool_calls > AIMessage COM tool_calls (texto + ação)
     resposta = None
+    resposta_com_tool = None
     for msg in reversed(result["messages"]):
         if isinstance(msg, AIMessage) and msg.content:
-            if msg.tool_calls:
-                continue
             content = msg.content
-            # Gemini 3.x pode retornar lista
             if isinstance(content, list):
                 content = " ".join(
                     p.get("text", "") for p in content if isinstance(p, dict)
                 )
             content = content.strip()
-            if content and len(content) > 2 and content.strip('.!?…,; \n'):
+            if not content or len(content) <= 2 or not content.strip('.!?…,; \n'):
+                continue
+            if not msg.tool_calls:
                 resposta = content
                 break
+            elif resposta_com_tool is None:
+                resposta_com_tool = content
+
+    if not resposta and resposta_com_tool:
+        resposta = resposta_com_tool
 
     # Logar tool calls e resposta
     for msg in novas_mensagens:
@@ -562,12 +688,16 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     _context_extra.pop(phone, None)
 
     # Re-check pausa antes de enviar (humano pode ter assumido durante processamento)
-    # Exceção: se a própria Ana transferiu nesta invocação, enviar a despedida antes de parar
-    ia_transferiu = any(
-        isinstance(m, AIMessage) and m.tool_calls and
-        any(tc["name"] == "transferir_departamento" for tc in m.tool_calls)
-        for m in novas_mensagens
-    )
+    # Exceção: se a própria Ana transferiu COM SUCESSO nesta invocação, enviar despedida
+    ia_transferiu = False
+    for i, m in enumerate(novas_mensagens):
+        if isinstance(m, AIMessage) and m.tool_calls:
+            if any(tc["name"] == "transferir_departamento" for tc in m.tool_calls):
+                for m2 in novas_mensagens[i+1:]:
+                    if isinstance(m2, ToolMessage) and m2.name == "transferir_departamento":
+                        ia_transferiu = "ERRO_TÉCNICO" not in (m2.content or "")
+                        break
+                break
 
     if await redis.is_paused(phone) and not ia_transferiu:
         logger.info(f"[GRAFO:{phone}] Pausa detectada antes do envio — abortando resposta")
@@ -575,7 +705,7 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
         return
 
     if ia_transferiu:
-        logger.info(f"[GRAFO:{phone}] Transferência própria — enviando despedida antes de pausar")
+        logger.info(f"[GRAFO:{phone}] Transferência com sucesso — enviando despedida antes de pausar")
 
     # Enviar resposta via Leadbox
     # Se a Ana transferiu, NÃO enviar queue_id/user_id na despedida — senão

@@ -328,18 +328,21 @@ async def _processar_disparo(item: dict, redis) -> bool:
     reference_id = item["reference_id"]
     context_type = item["context_type"]
     clean_phone = "".join(filter(str.isdigit, phone))
+    # Normalizar DDI: asaas_clientes pode ter "66..." sem "55"
+    if len(clean_phone) in (10, 11):
+        clean_phone = "55" + clean_phone
 
     # Verificar pausa
-    if await redis.is_paused(phone):
+    if await redis.is_paused(clean_phone):
         logger.info(f"[BILLING:{phone}] Pausado, adiando")
         log_event("billing_skipped", phone, reason="paused")
         return False
 
     # Verificar snooze (lead prometeu pagar em data X)
-    if await redis.is_snoozed(phone, "billing"):
-        snooze_until = await redis.snooze_get(phone, "billing")
-        logger.info(f"[BILLING:{phone}] Snooze ativo até {snooze_until}, pulando")
-        log_event("billing_skipped", phone, reason="snoozed", until=snooze_until)
+    if await redis.is_snoozed(clean_phone, "billing"):
+        snooze_until = await redis.snooze_get(clean_phone, "billing")
+        logger.info(f"[BILLING:{clean_phone}] Snooze ativo até {snooze_until}, pulando")
+        log_event("billing_skipped", clean_phone, reason="snoozed", until=snooze_until)
         return False
 
     # Fallback: checar snooze no Supabase (caso Redis reiniciou)
@@ -355,7 +358,7 @@ async def _processar_disparo(item: dict, redis) -> bool:
                     if date.fromisoformat(snooze_db) >= date.today():
                         logger.info(f"[BILLING:{phone}] Snooze DB até {snooze_db}, pulando")
                         # Restaurar no Redis
-                        await redis.snooze_set(phone, snooze_db)
+                        await redis.snooze_set(clean_phone, snooze_db)
                         return False
                     else:
                         # Snooze expirou — limpar
@@ -363,10 +366,11 @@ async def _processar_disparo(item: dict, redis) -> bool:
                             {"billing_snooze_until": None}
                         ).eq("telefone", clean_phone).execute()
     except Exception as e:
-        logger.warning(f"[BILLING:{phone}] Snooze DB check falhou: {e}")
+        logger.warning(f"[BILLING:{clean_phone}] Snooze DB check falhou — fail-safe, pulando: {e}")
+        return False
 
     # Anti-duplicata
-    dedup_key = f"dispatch:{phone}:{context_type}:{reference_id}:{date.today().isoformat()}"
+    dedup_key = f"dispatch:{clean_phone}:{context_type}:{reference_id}:{date.today().isoformat()}"
     if await redis.client.exists(dedup_key):
         logger.info(f"[BILLING:{phone}] Já enviou hoje")
         return False
