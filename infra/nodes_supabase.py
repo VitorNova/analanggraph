@@ -86,6 +86,25 @@ def salvar_mensagem(telefone: str, content: str, direction: str):
         registrar_incidente(telefone, "salvar_msg_erro", str(e)[:300])
 
 
+_TOOL_ERROR_PATTERNS = [
+    "Error:",
+    "Erro ao transferir:",
+    "Please fix your mistakes",
+    "Client error",
+    "Server error",
+    "validation error",
+    "does not exist",
+    "HTTP/",
+]
+
+
+def _is_tool_error(content: str) -> bool:
+    """Detecta se o conteúdo de uma ToolMessage é um erro de execução."""
+    if not content:
+        return False
+    return any(p in content for p in _TOOL_ERROR_PATTERNS)
+
+
 def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
     """Busca últimas N mensagens como objetos LangChain.
 
@@ -126,6 +145,14 @@ def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
                         content = ""
                     lang_msgs.append(AIMessage(content=content))
             elif role == "tool":
+                # Sanitizar erros antigos de tool — se ficarem no histórico,
+                # o Gemini aprende que "o sistema tem problemas" e reproduz
+                # hallucinations como "instabilidade no sistema".
+                # Pular ToolMessage com erro faz o validador de órfãs remover
+                # o bloco inteiro (AIMessage tool_calls + ToolMessage + resposta de erro).
+                if _is_tool_error(content):
+                    logger.info(f"[PERSISTENCIA:{telefone}] Removida ToolMessage com erro antigo: {content[:80]}")
+                    continue
                 lang_msgs.append(ToolMessage(
                     content=content,
                     name=m.get("tool_name", ""),
@@ -186,7 +213,37 @@ def buscar_historico(telefone: str, limite: int = 20) -> List[BaseMessage]:
             removed = validated.pop(0)
             logger.warning(f"[PERSISTENCIA:{telefone}] Removida AIMessage inicial sem HumanMessage precedente")
 
-        return validated
+        # Gemini exige alternância estrita user↔model.
+        # Corrigir: model→model (billing acumulado), user→user (rajada), AIMessage vazia.
+        merged: List[BaseMessage] = []
+        for msg in validated:
+            # Remover AIMessage vazia (sem content e sem tool_calls)
+            if isinstance(msg, AIMessage) and not msg.content and not msg.tool_calls:
+                logger.info(f"[PERSISTENCIA:{telefone}] Removida AIMessage vazia")
+                continue
+
+            if not merged:
+                merged.append(msg)
+                continue
+
+            prev = merged[-1]
+
+            # user→user: juntar conteúdo
+            if isinstance(msg, HumanMessage) and isinstance(prev, HumanMessage):
+                merged[-1] = HumanMessage(content=f"{prev.content}\n{msg.content}")
+                logger.info(f"[PERSISTENCIA:{telefone}] Mescladas HumanMessages consecutivas")
+                continue
+
+            # model→model (ambos sem tool_calls): manter só a última
+            if (isinstance(msg, AIMessage) and isinstance(prev, AIMessage)
+                    and not msg.tool_calls and not prev.tool_calls):
+                merged[-1] = msg
+                logger.info(f"[PERSISTENCIA:{telefone}] Substituída AIMessage consecutiva (billing acumulado)")
+                continue
+
+            merged.append(msg)
+
+        return merged
     except Exception as e:
         logger.error(f"[PERSISTENCIA] Erro buscar_historico: {e}", exc_info=True)
         from infra.incidentes import registrar_incidente
