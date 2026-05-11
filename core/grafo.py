@@ -406,7 +406,28 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     nome_ctx = context.get("nome", "") if context else ""
     start_execution(phone, input_preview=texto_preview, nome=nome_ctx)
 
-    # 0. Node buffer_9s — mensagens acumuladas
+    # 0a. Node webhook — dados recebidos do Leadbox
+    async with trace_node("webhook", input_data=_json.dumps({
+        "telefone": phone,
+        "nome": nome_ctx,
+        "canal": "leadbox",
+        "evento": "NewMessage",
+    }, ensure_ascii=False)) as nd_wh:
+        has_txt = any(m.get("texto") for m in messages)
+        has_img = any(m.get("imagem_base64") for m in messages)
+        has_aud = any(m.get("audio_base64") for m in messages)
+        has_doc = any(m.get("documento_base64") for m in messages)
+        tipo = []
+        if has_txt: tipo.append("texto")
+        if has_img: tipo.append("imagem")
+        if has_aud: tipo.append("audio")
+        if has_doc: tipo.append("documento")
+        nd_wh["output_data"] = _json.dumps({
+            "tipo_mensagem": tipo or ["vazio"],
+            "preview": texto_preview[:200],
+        }, ensure_ascii=False)
+
+    # 0b. Node buffer_9s — mensagens acumuladas
     async with trace_node("buffer_9s", input_data=_json.dumps({
         "telefone": phone,
         "mensagens_no_buffer": len(messages),
