@@ -321,63 +321,111 @@ async def run_billing():
 
 async def _processar_disparo(item: dict, redis) -> bool:
     """Processa um disparo: anti-duplicata -> salvar contexto -> enviar."""
+    import json as _json
     from infra.event_logger import log_event
+    from infra.flow_tracer import start_execution, trace_node, finish_execution
 
     phone = item["phone"]
     message = item["message"]
     reference_id = item["reference_id"]
     context_type = item["context_type"]
-    clean_phone = "".join(filter(str.isdigit, phone))
-    # Normalizar DDI: asaas_clientes pode ter "66..." sem "55"
-    if len(clean_phone) in (10, 11):
-        clean_phone = "55" + clean_phone
 
-    # Verificar pausa
-    if await redis.is_paused(clean_phone):
+    # -- Flow tracer: 1 execução por cobrança --
+    start_execution(
+        phone,
+        input_preview=f"R$ {item.get('template_params', ['',''])[1]} venc. {item.get('template_params', ['','',''])[2]}",
+        trigger="billing_job",
+        nome=item.get("nome", ""),
+    )
+
+    # Node: buscar_elegiveis (dados da cobrança)
+    async with trace_node("buscar_elegiveis", input_data=_json.dumps({
+        "cobranca_id": reference_id,
+        "template": item.get("template_key"),
+        "offset_dias": item.get("offset"),
+        "valor": item.get("template_params", ["", ""])[1] if len(item.get("template_params", [])) > 1 else "",
+        "vencimento": item.get("template_params", ["", "", ""])[2] if len(item.get("template_params", [])) > 2 else "",
+    }, ensure_ascii=False)) as nd_el:
+        nd_el["output_data"] = _json.dumps({
+            "nome": item.get("nome"),
+            "telefone": phone,
+            "template_key": item.get("template_key"),
+            "params": item.get("template_params", []),
+        }, ensure_ascii=False)
+
+    # Node: normalizar_tel
+    async with trace_node("normalizar_tel", input_data=_json.dumps({"telefone_original": phone}, ensure_ascii=False)) as nd_tel:
+        clean_phone = "".join(filter(str.isdigit, phone))
+        if len(clean_phone) in (10, 11):
+            clean_phone = "55" + clean_phone
+        nd_tel["output_data"] = _json.dumps({"telefone_normalizado": clean_phone}, ensure_ascii=False)
+
+    # Node: verif_pausa
+    async with trace_node("verif_pausa", input_data=_json.dumps({"telefone": clean_phone}, ensure_ascii=False)) as nd_p:
+        paused = await redis.is_paused(clean_phone)
+        nd_p["output_data"] = _json.dumps({"pausado": paused}, ensure_ascii=False)
+    if paused:
         logger.info(f"[BILLING:{phone}] Pausado, adiando")
         log_event("billing_skipped", phone, reason="paused")
+        await finish_execution("completed", "pausado")
         return False
 
-    # Verificar snooze (lead prometeu pagar em data X)
-    if await redis.is_snoozed(clean_phone, "billing"):
-        snooze_until = await redis.snooze_get(clean_phone, "billing")
-        logger.info(f"[BILLING:{clean_phone}] Snooze ativo até {snooze_until}, pulando")
-        log_event("billing_skipped", clean_phone, reason="snoozed", until=snooze_until)
-        return False
-
-    # Fallback: checar snooze no Supabase (caso Redis reiniciou)
-    try:
-        _sb = get_supabase()
-        if _sb:
-            _lead_snooze = _sb.table(TABLE_LEADS).select(
-                "billing_snooze_until"
-            ).eq("telefone", clean_phone).limit(1).execute()
-            if _lead_snooze.data:
-                snooze_db = _lead_snooze.data[0].get("billing_snooze_until")
-                if snooze_db:
-                    if date.fromisoformat(snooze_db) >= date.today():
-                        logger.info(f"[BILLING:{phone}] Snooze DB até {snooze_db}, pulando")
-                        # Restaurar no Redis
-                        await redis.snooze_set(clean_phone, snooze_db)
-                        return False
+    # Node: verif_snooze
+    async with trace_node("verif_snooze", input_data=_json.dumps({"telefone": clean_phone}, ensure_ascii=False)) as nd_sn:
+        snoozed = await redis.is_snoozed(clean_phone, "billing")
+        snooze_until = None
+        snooze_db = None
+        if snoozed:
+            snooze_until = await redis.snooze_get(clean_phone, "billing")
+            nd_sn["output_data"] = _json.dumps({"snoozed": True, "ate": snooze_until, "fonte": "redis"}, ensure_ascii=False)
+        else:
+            # Fallback Supabase
+            try:
+                _sb = get_supabase()
+                if _sb:
+                    _lead_snooze = _sb.table(TABLE_LEADS).select(
+                        "billing_snooze_until"
+                    ).eq("telefone", clean_phone).limit(1).execute()
+                    if _lead_snooze.data:
+                        snooze_db = _lead_snooze.data[0].get("billing_snooze_until")
+                        if snooze_db and date.fromisoformat(snooze_db) >= date.today():
+                            snoozed = True
+                            await redis.snooze_set(clean_phone, snooze_db)
+                            nd_sn["output_data"] = _json.dumps({"snoozed": True, "ate": snooze_db, "fonte": "supabase"}, ensure_ascii=False)
+                        elif snooze_db:
+                            _sb.table(TABLE_LEADS).update({"billing_snooze_until": None}).eq("telefone", clean_phone).execute()
+                            nd_sn["output_data"] = _json.dumps({"snoozed": False, "expirado": snooze_db}, ensure_ascii=False)
+                        else:
+                            nd_sn["output_data"] = _json.dumps({"snoozed": False}, ensure_ascii=False)
                     else:
-                        # Snooze expirou — limpar
-                        _sb.table(TABLE_LEADS).update(
-                            {"billing_snooze_until": None}
-                        ).eq("telefone", clean_phone).execute()
-    except Exception as e:
-        logger.warning(f"[BILLING:{clean_phone}] Snooze DB check falhou — fail-safe, pulando: {e}")
+                        nd_sn["output_data"] = _json.dumps({"snoozed": False}, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"[BILLING:{clean_phone}] Snooze DB check falhou — fail-safe, pulando: {e}")
+                nd_sn["status"] = "error"
+                nd_sn["error_message"] = str(e)[:300]
+                nd_sn["output_data"] = _json.dumps({"snoozed": True, "motivo": "fail-safe db error"}, ensure_ascii=False)
+                await finish_execution("completed", "snooze_db_error")
+                return False
+    if snoozed:
+        logger.info(f"[BILLING:{clean_phone}] Snooze ativo até {snooze_until or snooze_db}, pulando")
+        log_event("billing_skipped", clean_phone, reason="snoozed", until=snooze_until or snooze_db)
+        await finish_execution("completed", "snoozed")
         return False
 
-    # Anti-duplicata
+    # Node: verif_duplicata
     dedup_key = f"dispatch:{clean_phone}:{context_type}:{reference_id}:{date.today().isoformat()}"
-    if await redis.client.exists(dedup_key):
+    async with trace_node("verif_duplicata", input_data=_json.dumps({"chave": dedup_key}, ensure_ascii=False)) as nd_dd:
+        exists = await redis.client.exists(dedup_key)
+        nd_dd["output_data"] = _json.dumps({"duplicata": bool(exists)}, ensure_ascii=False)
+    if exists:
         logger.info(f"[BILLING:{phone}] Já enviou hoje")
+        await finish_execution("completed", "duplicata")
         return False
 
     # ORDEM CRÍTICA: salvar contexto ANTES de enviar
     supabase = get_supabase()
     if not supabase:
+        await finish_execution("error", error_msg="supabase_indisponivel")
         return False
 
     now = datetime.now(timezone.utc).isoformat()
@@ -393,7 +441,6 @@ async def _processar_disparo(item: dict, redis) -> bool:
             break
 
     if not lead:
-        # Criar lead se não existe
         from infra.nodes_supabase import upsert_lead
         lead_id = upsert_lead(clean_phone, nome=item.get("nome"))
         if lead_id:
@@ -405,24 +452,24 @@ async def _processar_disparo(item: dict, redis) -> bool:
 
     if not lead:
         logger.warning(f"[BILLING:{phone}] Lead não encontrado/criado")
+        await finish_execution("error", error_msg="lead_nao_encontrado")
         return False
 
-    # Salvar contexto no histórico
-    history = lead.get("conversation_history") or {"messages": []}
-    history["messages"].append({
-        "role": "model",
-        "content": message,
-        "timestamp": now,
-        "context": context_type,
-        "reference_id": reference_id,
-    })
+    # Node: salvar_contexto
+    async with trace_node("salvar_contexto", input_data=_json.dumps({
+        "lead_id": lead["id"], "contexto": context_type, "referencia": reference_id,
+    }, ensure_ascii=False)) as nd_ctx:
+        history = lead.get("conversation_history") or {"messages": []}
+        history["messages"].append({
+            "role": "model", "content": message, "timestamp": now,
+            "context": context_type, "reference_id": reference_id,
+        })
+        supabase.table(TABLE_LEADS).update({
+            "conversation_history": history, "updated_at": now,
+        }).eq("id", lead["id"]).execute()
+        nd_ctx["output_data"] = _json.dumps({"salvo": True, "mensagens_total": len(history["messages"])}, ensure_ascii=False)
 
-    supabase.table(TABLE_LEADS).update({
-        "conversation_history": history,
-        "updated_at": now,
-    }).eq("id", lead["id"]).execute()
-
-    # Enviar template via Meta API + registrar no Leadbox (CRM + fila)
+    # Node: enviar_template
     from infra.leadbox_client import enviar_template_leadbox
     from core.constants import QUEUE_BILLING, USER_IA
 
@@ -430,46 +477,57 @@ async def _processar_disparo(item: dict, redis) -> bool:
     wa_template = WHATSAPP_TEMPLATES[item["template_key"]]
     template_params = item["template_params"]
 
-    if not enviar_template_leadbox(
-        tel_envio, wa_template, template_params,
-        body_texto=message,
-        queue_id=QUEUE_BILLING,
-        user_id=USER_IA,
-    ):
+    async with trace_node("enviar_template", input_data=_json.dumps({
+        "telefone": tel_envio, "template": wa_template,
+        "params": template_params, "fila": QUEUE_BILLING, "usuario": USER_IA,
+    }, ensure_ascii=False)) as nd_env:
+        ok = enviar_template_leadbox(
+            tel_envio, wa_template, template_params,
+            body_texto=message, queue_id=QUEUE_BILLING, user_id=USER_IA,
+        )
+        if ok:
+            nd_env["output_data"] = _json.dumps({"status": "enviado", "template": wa_template}, ensure_ascii=False)
+        else:
+            nd_env["status"] = "error"
+            nd_env["error_message"] = f"Template {wa_template} falhou"
+            nd_env["output_data"] = _json.dumps({"status": "falhou", "template": wa_template}, ensure_ascii=False)
+
+    if not ok:
         logger.error(f"[BILLING:{phone}] Falha ao enviar template '{wa_template}'")
         log_event("billing_error", phone, reason="template_failed", template=item.get("template_key"))
         registrar_incidente(phone, "billing_envio_falhou", f"Template {wa_template} falhou para cobrança {reference_id}")
-        # Marcar delivery_failed no histórico (best effort)
         try:
             history["messages"][-1]["delivery_failed"] = True
-            supabase.table(TABLE_LEADS).update({
-                "conversation_history": history,
-            }).eq("id", lead["id"]).execute()
+            supabase.table(TABLE_LEADS).update({"conversation_history": history}).eq("id", lead["id"]).execute()
         except Exception:
             pass
-        # NÃO marcar dedup — permitir retry na próxima execução
+        await finish_execution("error", error_msg=f"template_failed:{wa_template}")
         return False
 
-    # Marcar ia_cobrou na asaas_cobrancas (para o painel Cobranças & Pagamentos)
-    try:
-        existing = supabase.table(TABLE_ASAAS_COBRANCAS).select(
-            "ia_total_notificacoes"
-        ).eq("id", reference_id).eq("agent_id", ANA_AGENT_UUID).limit(1).execute()
-        total = (existing.data[0].get("ia_total_notificacoes") or 0) + 1 if existing.data else 1
+    # Node: marcar_cobranca
+    async with trace_node("marcar_cobranca", input_data=_json.dumps({
+        "cobranca_id": reference_id, "template_key": item["template_key"],
+    }, ensure_ascii=False)) as nd_mc:
+        try:
+            existing = supabase.table(TABLE_ASAAS_COBRANCAS).select(
+                "ia_total_notificacoes"
+            ).eq("id", reference_id).eq("agent_id", ANA_AGENT_UUID).limit(1).execute()
+            total = (existing.data[0].get("ia_total_notificacoes") or 0) + 1 if existing.data else 1
 
-        supabase.table(TABLE_ASAAS_COBRANCAS).update({
-            "ia_cobrou": True,
-            "ia_cobrou_at": now,
-            "ia_ultimo_step": item["template_key"],
-            "ia_total_notificacoes": total,
-        }).eq("id", reference_id).eq("agent_id", ANA_AGENT_UUID).execute()
-    except Exception as e:
-        logger.warning(f"[BILLING:{phone}] Falha ao marcar ia_cobrou: {e}")
+            supabase.table(TABLE_ASAAS_COBRANCAS).update({
+                "ia_cobrou": True, "ia_cobrou_at": now,
+                "ia_ultimo_step": item["template_key"], "ia_total_notificacoes": total,
+            }).eq("id", reference_id).eq("agent_id", ANA_AGENT_UUID).execute()
+            nd_mc["output_data"] = _json.dumps({"ia_cobrou": True, "notificacoes": total}, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[BILLING:{phone}] Falha ao marcar ia_cobrou: {e}")
+            nd_mc["output_data"] = _json.dumps({"ia_cobrou": False, "erro": str(e)[:200]}, ensure_ascii=False)
 
     # Marcar anti-duplicata (24h)
     await redis.client.set(dedup_key, "1", ex=86400)
     logger.info(f"[BILLING:{phone}] Enviado ({item['template_key']}, offset={item['offset']})")
     log_event("billing_sent", phone, template=item.get("template_key"), offset=item.get("offset"), ref=reference_id)
+    await finish_execution("completed", output_preview=f"Enviado {wa_template} para {clean_phone}")
     return True
 
 

@@ -259,6 +259,24 @@ async def run_manutencao():
         return
 
     try:
+        # P7: heartbeat check — alertar se último heartbeat > 49h
+        last_hb = await redis.client.get("heartbeat:manutencao_job")
+        if last_hb:
+            if isinstance(last_hb, bytes):
+                last_hb = last_hb.decode()
+            try:
+                last_dt = datetime.fromisoformat(last_hb)
+                gap_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600
+                if gap_hours > 49:
+                    logger.error(f"[MANUTENCAO] ALERTA: último heartbeat há {gap_hours:.0f}h — job pode ter falhado")
+                    from infra.incidentes import registrar_incidente
+                    registrar_incidente(
+                        "MANUTENCAO_SYSTEM", "manutencao_heartbeat_gap",
+                        f"Último heartbeat há {gap_hours:.0f}h. Job pode não ter rodado."
+                    )
+            except (ValueError, TypeError):
+                pass
+
         logger.info("[MANUTENCAO] Iniciando")
         elegiveis = buscar_contratos_elegiveis(hoje)
         atrasados = buscar_contratos_atrasados(hoje, max_dias=30, limite=5)
@@ -284,35 +302,83 @@ async def run_manutencao():
         logger.info(f"[MANUTENCAO] Concluído: enviados={enviados} erros={erros}")
 
     finally:
+        # P7: gravar heartbeat para detectar se job parou de rodar
+        try:
+            await redis.client.set(
+                "heartbeat:manutencao_job",
+                datetime.now(timezone.utc).isoformat(),
+                ex=90000,  # TTL 25h
+            )
+        except Exception:
+            pass
         await redis.client.delete(lock_key)
 
 
 async def _processar_notificacao(item: dict, redis) -> bool:
     """Processa uma notificação de manutenção."""
+    import json as _json
     from infra.event_logger import log_event
+    from infra.flow_tracer import start_execution, trace_node, finish_execution
 
     phone = item["phone"]
     message = item["message"]
     contract_id = item["contract_id"]
     context_type = item["context_type"]
 
-    if await redis.is_paused(phone):
-        logger.info(f"[MANUTENCAO:{phone}] Pausado, adiando")
+    # -- Flow tracer: 1 execução por contrato --
+    start_execution(
+        phone,
+        input_preview=f"Contrato {contract_id} — {context_type}",
+        trigger="manutencao_job",
+        nome=item.get("nome", ""),
+    )
+
+    # Node: buscar_contratos (dados do contrato)
+    async with trace_node("buscar_contratos", input_data=_json.dumps({
+        "contrato_id": contract_id, "tipo": context_type,
+        "equipamento": item.get("template_params", ["", ""])[1] if len(item.get("template_params", [])) > 1 else "",
+        "endereco": item.get("template_params", ["", "", ""])[2] if len(item.get("template_params", [])) > 2 else "",
+    }, ensure_ascii=False)) as nd_ct:
+        nd_ct["output_data"] = _json.dumps({
+            "nome": item.get("nome"), "telefone": phone,
+            "params": item.get("template_params", []),
+        }, ensure_ascii=False)
+
+    # Node: normalizar_tel
+    async with trace_node("normalizar_tel", input_data=_json.dumps({"telefone_original": phone}, ensure_ascii=False)) as nd_tel:
+        clean_phone = "".join(filter(str.isdigit, phone))
+        if len(clean_phone) in (10, 11):
+            clean_phone = "55" + clean_phone
+        nd_tel["output_data"] = _json.dumps({"telefone_normalizado": clean_phone}, ensure_ascii=False)
+
+    # Node: verif_pausa
+    async with trace_node("verif_pausa", input_data=_json.dumps({"telefone": clean_phone}, ensure_ascii=False)) as nd_p:
+        paused = await redis.is_paused(clean_phone)
+        nd_p["output_data"] = _json.dumps({"pausado": paused}, ensure_ascii=False)
+    if paused:
+        logger.info(f"[MANUTENCAO:{clean_phone}] Pausado, adiando")
+        log_event("manutencao_skipped", clean_phone, reason="paused")
+        await finish_execution("completed", "pausado")
         return False
 
-    # Anti-duplicata
-    dedup_key = f"dispatch:{phone}:{context_type}:{contract_id}:{date.today().isoformat()}"
-    if await redis.client.exists(dedup_key):
-        logger.info(f"[MANUTENCAO:{phone}] Já notificou hoje")
+    # Node: verif_duplicata
+    dedup_key = f"dispatch:{clean_phone}:{context_type}:{contract_id}:{date.today().isoformat()}"
+    async with trace_node("verif_duplicata", input_data=_json.dumps({"chave": dedup_key}, ensure_ascii=False)) as nd_dd:
+        exists = await redis.client.exists(dedup_key)
+        nd_dd["output_data"] = _json.dumps({"duplicata": bool(exists)}, ensure_ascii=False)
+    if exists:
+        logger.info(f"[MANUTENCAO:{clean_phone}] Já notificou hoje")
+        log_event("manutencao_skipped", clean_phone, reason="dedup")
+        await finish_execution("completed", "duplicata")
         return False
 
     # Salvar contexto ANTES de enviar
     supabase = get_supabase()
     if not supabase:
+        await finish_execution("error", error_msg="supabase_indisponivel")
         return False
 
     now = datetime.now(timezone.utc).isoformat()
-    clean_phone = "".join(filter(str.isdigit, phone))
 
     # Buscar lead
     lead = None
@@ -334,10 +400,8 @@ async def _processar_notificacao(item: dict, redis) -> bool:
                 "timestamp": now,
             }]}
             supabase.table(TABLE_LEADS).update({
-                "conversation_history": init_history,
-                "updated_at": now,
+                "conversation_history": init_history, "updated_at": now,
             }).eq("id", lead_id).execute()
-
             result = supabase.table(TABLE_LEADS).select(
                 "id, conversation_history"
             ).eq("id", lead_id).limit(1).execute()
@@ -345,50 +409,71 @@ async def _processar_notificacao(item: dict, redis) -> bool:
                 lead = result.data[0]
 
     if not lead:
-        logger.warning(f"[MANUTENCAO:{phone}] Lead não encontrado/criado")
+        logger.warning(f"[MANUTENCAO:{clean_phone}] Lead não encontrado/criado")
+        await finish_execution("error", error_msg="lead_nao_encontrado")
         return False
 
-    # Salvar contexto
-    history = lead.get("conversation_history") or {"messages": []}
-    history["messages"].append({
-        "role": "model",
-        "content": message,
-        "timestamp": now,
-        "context": context_type,
-        "contract_id": contract_id,
-    })
+    # Node: salvar_contexto
+    async with trace_node("salvar_contexto", input_data=_json.dumps({
+        "lead_id": lead["id"], "contexto": context_type, "contrato": contract_id,
+    }, ensure_ascii=False)) as nd_ctx:
+        history = lead.get("conversation_history") or {"messages": []}
+        history["messages"].append({
+            "role": "model", "content": message, "timestamp": now,
+            "context": context_type, "contract_id": contract_id,
+        })
+        supabase.table(TABLE_LEADS).update({
+            "conversation_history": history, "updated_at": now,
+        }).eq("id", lead["id"]).execute()
+        nd_ctx["output_data"] = _json.dumps({"salvo": True, "mensagens_total": len(history["messages"])}, ensure_ascii=False)
 
-    supabase.table(TABLE_LEADS).update({
-        "conversation_history": history,
-        "updated_at": now,
-    }).eq("id", lead["id"]).execute()
-
-    # Enviar template via Leadbox (1 POST: Leadbox → Meta → WhatsApp)
+    # Node: enviar_template
     from infra.leadbox_client import enviar_template_leadbox
-
     tel_envio = clean_phone if clean_phone.startswith("55") else f"55{clean_phone}"
+    from core.constants import QUEUE_MANUTENCAO, USER_IA
 
-    from core.constants import QUEUE_ATENDIMENTO, USER_NATHALIA
-    if not enviar_template_leadbox(
-        tel_envio, WHATSAPP_TEMPLATE, item["template_params"],
-        queue_id=QUEUE_ATENDIMENTO, user_id=USER_NATHALIA,
-    ):
-        logger.error(f"[MANUTENCAO:{phone}] Leadbox erro ao enviar template")
-        await redis.client.set(dedup_key, "1", ex=86400)
+    async with trace_node("enviar_template", input_data=_json.dumps({
+        "telefone": tel_envio, "template": WHATSAPP_TEMPLATE,
+        "params": item["template_params"], "fila": QUEUE_MANUTENCAO, "usuario": USER_IA,
+    }, ensure_ascii=False)) as nd_env:
+        ok = enviar_template_leadbox(
+            tel_envio, WHATSAPP_TEMPLATE, item["template_params"],
+            queue_id=QUEUE_MANUTENCAO, user_id=USER_IA,
+        )
+        if ok:
+            nd_env["output_data"] = _json.dumps({"status": "enviado", "template": WHATSAPP_TEMPLATE}, ensure_ascii=False)
+        else:
+            nd_env["status"] = "error"
+            nd_env["error_message"] = f"Template {WHATSAPP_TEMPLATE} falhou"
+            nd_env["output_data"] = _json.dumps({"status": "falhou"}, ensure_ascii=False)
+
+    if not ok:
+        logger.error(f"[MANUTENCAO:{clean_phone}] Leadbox erro ao enviar template")
+        from infra.incidentes import registrar_incidente
+        registrar_incidente(clean_phone, "manutencao_envio_falhou", f"Template {WHATSAPP_TEMPLATE} falhou para contrato {contract_id}")
+        try:
+            history["messages"][-1]["delivery_failed"] = True
+            supabase.table(TABLE_LEADS).update({"conversation_history": history}).eq("id", lead["id"]).execute()
+        except Exception:
+            pass
+        await finish_execution("error", error_msg=f"template_failed:{WHATSAPP_TEMPLATE}")
         return False
 
-    # Marcar contrato como notificado SÓ APÓS envio bem-sucedido
-    try:
-        supabase.table(TABLE_CONTRACT_DETAILS).update({
-            "maintenance_status": "notified",
-            "notificacao_enviada_at": now,
-        }).eq("id", contract_id).execute()
-    except Exception as e:
-        logger.warning(f"[MANUTENCAO:{phone}] Erro ao marcar contrato: {e}")
+    # Node: marcar_notificado
+    async with trace_node("marcar_notificado", input_data=_json.dumps({"contrato_id": contract_id}, ensure_ascii=False)) as nd_mn:
+        try:
+            supabase.table(TABLE_CONTRACT_DETAILS).update({
+                "maintenance_status": "notified", "notificacao_enviada_at": now,
+            }).eq("id", contract_id).execute()
+            nd_mn["output_data"] = _json.dumps({"status": "notified", "contrato": contract_id}, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"[MANUTENCAO:{clean_phone}] Erro ao marcar contrato: {e}")
+            nd_mn["output_data"] = _json.dumps({"erro": str(e)[:200]}, ensure_ascii=False)
 
     await redis.client.set(dedup_key, "1", ex=86400)
-    logger.info(f"[MANUTENCAO:{phone}] Notificação enviada (contrato={contract_id})")
-    log_event("manutencao_sent", phone, contract_id=contract_id)
+    logger.info(f"[MANUTENCAO:{clean_phone}] Notificação enviada (contrato={contract_id})")
+    log_event("manutencao_sent", clean_phone, contract_id=contract_id)
+    await finish_execution("completed", output_preview=f"Enviado manutencao para {clean_phone}")
     return True
 
 

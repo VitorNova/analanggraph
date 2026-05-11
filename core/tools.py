@@ -110,16 +110,21 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
     Returns:
         Dados do cliente formatados: nome, CPF, cobranças pendentes com links de boleto/pix, contratos ativos com quantidade de ares. Ou mensagem de erro se não encontrar.
     """
+    import json as _json
+    from infra.flow_tracer import trace_node_sync, finalize_node_sync
+    _nd = trace_node_sync("tool_consultar", input_data=_json.dumps({"cpf": cpf or "", "telefone_ultimos4": phone[-4:] if phone else "", "buscar_por_telefone": buscar_por_telefone}, ensure_ascii=False))
+
     from infra.supabase import get_supabase
     supabase = get_supabase()
     if not supabase:
         logger.error("[TOOL] Supabase indisponível")
+        _nd["status"] = "error"; _nd["error_message"] = "supabase_indisponivel"; finalize_node_sync(_nd)
         return "Erro: sistema temporariamente indisponível. Tente novamente em alguns minutos."
 
-    customer_id = None
+    customer_ids = []
     customer_data = None
 
-    # 1. Busca por CPF (se fornecido)
+    # 1. Busca por CPF (se fornecido) — limit 2 para cobrir cadastros duplicados no Asaas
     if cpf:
         cpf_limpo = re.sub(r'\D', '', cpf)
 
@@ -131,15 +136,15 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
 
         result = supabase.table("asaas_clientes").select(
             "id, name, cpf_cnpj, mobile_phone, email"
-        ).eq("cpf_cnpj", cpf_limpo).is_("deleted_at", "null").limit(1).execute()
+        ).eq("cpf_cnpj", cpf_limpo).is_("deleted_at", "null").limit(2).execute()
 
         if result.data:
             customer_data = result.data[0]
-            customer_id = customer_data["id"]
-            logger.info(f"[TOOL] Cliente encontrado por CPF: {cpf_limpo[:3]}***")
+            customer_ids = [r["id"] for r in result.data]
+            logger.info(f"[TOOL] Cliente encontrado por CPF: {cpf_limpo[:3]}*** ({len(customer_ids)} cadastro(s))")
 
     # 2. Busca por telefone (apenas quando explicitamente solicitado — leads de disparo)
-    if not customer_id and not cpf and buscar_por_telefone and phone:
+    if not customer_ids and not cpf and buscar_por_telefone and phone:
         phone_clean = re.sub(r'\D', '', phone)
 
         # Tenta variantes: com/sem 55, últimos 8-11 dígitos
@@ -157,12 +162,12 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
 
             if result.data:
                 customer_data = result.data[0]
-                customer_id = customer_data["id"]
+                customer_ids = [result.data[0]["id"]]
                 logger.info(f"[TOOL] Cliente encontrado por telefone: ***{variante[-4:]}")
                 break
 
     # 3. Não encontrou
-    if not customer_id:
+    if not customer_ids:
         if cpf:
             cpf_limpo = re.sub(r'\D', '', cpf)
             return f"Não encontrei cadastro com o CPF/CNPJ {cpf_limpo[:3]}***{cpf_limpo[-2:]}. Pode verificar se digitou corretamente?"
@@ -170,64 +175,86 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
             return "Não encontrei seu cadastro pelo telefone. Pode me informar seu CPF ou CNPJ?"
         return "Para localizar seu cadastro, preciso do seu CPF ou CNPJ."
 
-    # 4. Busca cobranças: OVERDUE (todas) + PENDING apenas vencendo até hoje
+    # 4. Busca cobranças de TODOS os customer_ids: OVERDUE + PENDING do dia + futuras
     hoje_iso = date.today().isoformat()
-    cobrancas_overdue = supabase.table("asaas_cobrancas").select(
-        "id, value, due_date, status, invoice_url"
-    ).eq("customer_id", customer_id).eq(
-        "status", "OVERDUE"
-    ).is_("deleted_at", "null").order("due_date").limit(10).execute()
+    cobrancas_vencidas = []
+    cobrancas_futuras_data = []
 
-    cobrancas_pending = supabase.table("asaas_cobrancas").select(
-        "id, value, due_date, status, invoice_url"
-    ).eq("customer_id", customer_id).eq(
-        "status", "PENDING"
-    ).lte("due_date", hoje_iso).is_("deleted_at", "null").order("due_date").limit(10).execute()
+    for cid in customer_ids:
+        overdue = supabase.table("asaas_cobrancas").select(
+            "id, value, due_date, status, invoice_url"
+        ).eq("customer_id", cid).eq(
+            "status", "OVERDUE"
+        ).is_("deleted_at", "null").order("due_date").limit(10).execute()
 
-    cobrancas_data = (cobrancas_overdue.data or []) + (cobrancas_pending.data or [])
+        pending = supabase.table("asaas_cobrancas").select(
+            "id, value, due_date, status, invoice_url"
+        ).eq("customer_id", cid).eq(
+            "status", "PENDING"
+        ).lte("due_date", hoje_iso).is_("deleted_at", "null").order("due_date").limit(10).execute()
 
-    # 5. Busca contratos ativos
-    contratos = supabase.table("asaas_contratos").select(
-        "description, value, next_due_date, qtd_ars"
-    ).eq("customer_id", customer_id).eq("status", "ACTIVE").limit(5).execute()
+        futuras = supabase.table("asaas_cobrancas").select(
+            "id, value, due_date, status, invoice_url"
+        ).eq("customer_id", cid).eq(
+            "status", "PENDING"
+        ).gt("due_date", hoje_iso).is_("deleted_at", "null").order("due_date").limit(6).execute()
+
+        cobrancas_vencidas += (overdue.data or []) + (pending.data or [])
+        cobrancas_futuras_data += (futuras.data or [])
+
+    # Ordena por due_date após juntar
+    cobrancas_vencidas.sort(key=lambda c: c["due_date"])
+    cobrancas_futuras_data.sort(key=lambda c: c["due_date"])
+
+    # 5. Busca contratos ativos de TODOS os customer_ids
+    contratos_data = []
+    for cid in customer_ids:
+        cts = supabase.table("asaas_contratos").select(
+            "description, value, next_due_date, qtd_ars"
+        ).eq("customer_id", cid).eq("status", "ACTIVE").limit(5).execute()
+        contratos_data += (cts.data or [])
 
     # 6. Monta resposta estruturada
     resp = f"DADOS DO CLIENTE:\n"
     resp += f"Nome: {customer_data.get('name', 'Não informado')}\n"
     resp += f"CPF/CNPJ: {customer_data.get('cpf_cnpj', 'Não informado')}\n\n"
 
-    # Cobranças
-    cobs = cobrancas_data
-    if cobs:
-        resp += f"COBRANÇAS PENDENTES ({len(cobs)}):\n"
-        for c in cobs:
-            status_texto = "⚠️ VENCIDA" if c["status"] == "OVERDUE" else "📅 Pendente"
-            resp += f"- R$ {c['value']:.2f} | Vencimento: {c['due_date']} | {status_texto}\n"
+    # Cobranças vencidas/do dia
+    if cobrancas_vencidas:
+        resp += f"COBRANÇAS PENDENTES/VENCIDAS ({len(cobrancas_vencidas)}):\n"
+        for i, c in enumerate(cobrancas_vencidas, 1):
+            if c["status"] == "OVERDUE":
+                status_texto = "⚠️ VENCIDA"
+            elif c["due_date"][:10] == hoje_iso:
+                status_texto = "📅 Vence hoje"
+            else:
+                status_texto = "⚠️ VENCIDA (sync pendente)"
+            ref = c.get('id', '')[-6:] if c.get('id') else ''
+            resp += f"Cobrança {i} (#{ref}): R$ {c['value']:.2f} | Vencimento: {c['due_date']} | {status_texto}\n"
             if c.get("invoice_url"):
                 resp += f"  Link do boleto/pix: {c['invoice_url']}\n"
     else:
-        # Cenário 2: sem vencidos, verificar se há cobranças futuras
-        futuras = supabase.table("asaas_cobrancas").select(
-            "id, value, due_date, status, invoice_url"
-        ).eq("customer_id", customer_id).eq(
-            "status", "PENDING"
-        ).gt("due_date", hoje_iso).is_("deleted_at", "null").order("due_date").limit(6).execute()
+        resp += "COBRANÇAS VENCIDAS: Nenhuma ✅\n"
 
-        futuras_data = futuras.data or []
-        if futuras_data:
-            resp += "COBRANÇAS VENCIDAS: Nenhuma ✅\n"
-            resp += f"COBRANÇAS FUTURAS ({len(futuras_data)}):\n"
-            for c in futuras_data:
-                resp += f"- R$ {c['value']:.2f} | Vencimento: {c['due_date']} | 📅 Futura\n"
-                if c.get("invoice_url"):
-                    resp += f"  Link do boleto/pix: {c['invoice_url']}\n"
-            resp += "\nINSTRUÇÃO: O cliente não tem cobranças vencidas, mas existem cobranças futuras. "
-            resp += "Informe que não há nada vencido e pergunte se deseja o boleto de algum mês específico entre os listados acima.\n"
-        else:
-            resp += "COBRANÇAS PENDENTES: Nenhuma ✅\n"
+    # Cobranças futuras (sempre busca, não é mais fallback)
+    if cobrancas_futuras_data:
+        resp += f"\nCOBRANÇAS FUTURAS ({len(cobrancas_futuras_data)}):\n"
+        for i, c in enumerate(cobrancas_futuras_data, 1):
+            ref = c.get('id', '')[-6:] if c.get('id') else ''
+            resp += f"Cobrança {i} (#{ref}): R$ {c['value']:.2f} | Vencimento: {c['due_date']} | 📅 Futura\n"
+            if c.get("invoice_url"):
+                resp += f"  Link do boleto/pix: {c['invoice_url']}\n"
+
+    # Instrução para o LLM
+    if cobrancas_vencidas or cobrancas_futuras_data:
+        resp += "\nINSTRUÇÃO: Liste CADA cobrança acima individualmente com seu link. "
+        resp += "Se há 3 cobranças, envie 3 links separados. NÃO agrupe por data ou valor. "
+        resp += "Se o cliente pedir uma cobrança específica (ex: 'do mês que vem'), envie o link correspondente.\n"
+    else:
+        resp += "COBRANÇAS PENDENTES: Nenhuma ✅\n"
 
     # Contratos
-    cts = contratos.data or []
+    cts = contratos_data
     if cts:
         resp += f"\nCONTRATOS ATIVOS ({len(cts)}):\n"
         for ct in cts:
@@ -257,19 +284,23 @@ Exemplo 4: Cliente pergunta "quantos ares eu tenho alugado?"
     # 8. Busca pagamentos recentes (se solicitado)
     if verificar_pagamento:
         limite = (date.today() - timedelta(days=30)).isoformat()
-        pagas = supabase.table("asaas_cobrancas").select(
-            "value, due_date, payment_date"
-        ).eq("customer_id", customer_id).in_(
-            "status", ["RECEIVED", "CONFIRMED"]
-        ).gte("payment_date", limite).order("payment_date", desc=True).limit(5).execute()
+        pagas_data = []
+        for cid in customer_ids:
+            pagas = supabase.table("asaas_cobrancas").select(
+                "value, due_date, payment_date"
+            ).eq("customer_id", cid).in_(
+                "status", ["RECEIVED", "CONFIRMED"]
+            ).gte("payment_date", limite).order("payment_date", desc=True).limit(5).execute()
+            pagas_data += (pagas.data or [])
 
-        if pagas.data:
+        if pagas_data:
             resp += f"\nPAGAMENTOS RECENTES (últimos 30 dias):\n"
-            for p in pagas.data:
+            for p in pagas_data:
                 resp += f"- R$ {p['value']:.2f} | Pago em: {p.get('payment_date', '?')} ✅\n"
         else:
             resp += "\nPAGAMENTOS RECENTES: Nenhum nos últimos 30 dias ❌\n"
 
+    _nd["output_data"] = _json.dumps({"resultado": resp[:500]}, ensure_ascii=False)[:1500]; _nd["status"] = "success"; finalize_node_sync(_nd)
     return resp
 
 
@@ -313,7 +344,7 @@ QUANDO USAR:
   - Novo aluguel após coletar nome+CPF
   - Retirada, devolução, mudança de endereço, cancelamento
   - Defeito no ar: quebrou, pingando, barulho, não gela
-  - Manutenção preventiva: cliente quer agendar dia/horário (você NÃO pode agendar)
+  - Manutenção preventiva: QUALQUER resposta do cliente ao disparo de manutenção (você NÃO pode agendar — SEMPRE transfira)
   - Reclamação, insatisfação
   - Cliente pede humano/atendente
   - Cidade fora de Rondonópolis/Primavera do Leste
@@ -343,6 +374,10 @@ disponível — foi apenas um problema temporário de conexão.
     Returns:
         Confirmação de transferência ou mensagem de erro técnico com instrução de retry.
     """
+    import json as _json
+    from infra.flow_tracer import trace_node_sync, finalize_node_sync
+    _nd = trace_node_sync("tool_transferir", input_data=_json.dumps({"destino": destino}, ensure_ascii=False))
+
     LEADBOX_URL = "https://enterprise-135api.leadbox.app.br"
     LEADBOX_UUID = os.environ.get("LEADBOX_API_UUID", "")
     LEADBOX_TOKEN = os.environ.get("LEADBOX_API_TOKEN", "")
@@ -402,6 +437,7 @@ disponível — foi apenas um problema temporário de conexão.
         _mark_sent_by_ia(telefone_limpo)
 
         logger.info(f"[TOOL] Transferência OK: {phone} → {destino_nome}")
+        _nd["output_data"] = _json.dumps({"status": "ok", "destino": destino_nome, "fila": queue_id, "usuario": user_id}, ensure_ascii=False); _nd["status"] = "success"; finalize_node_sync(_nd)
         return f"Transferido para {destino_nome} com sucesso"
 
     except httpx.HTTPStatusError as e:
@@ -424,6 +460,7 @@ disponível — foi apenas um problema temporário de conexão.
         logger.error(f"[TOOL] Erro ao transferir {phone} → {destino_nome}: {e}", exc_info=True)
         from infra.incidentes import registrar_incidente
         registrar_incidente(phone, "transferencia_falhou", str(e)[:300], {"destino": destino})
+        _nd["status"] = "error"; _nd["error_message"] = str(e)[:300]; finalize_node_sync(_nd)
         return (f"ERRO_TÉCNICO: falha ao transferir para {destino_nome}. "
                 f"Chame transferir_departamento(destino=\"{destino_lower}\") novamente. "
                 f"NÃO diga que {destino_nome} não está disponível.")
@@ -494,6 +531,10 @@ Exemplo 5: Cliente diz "vou tentar pagar" (sem data específica)
     Returns:
         Confirmação do compromisso registrado com a quantidade de dias até a data.
     """
+    import json as _json
+    from infra.flow_tracer import trace_node_sync, finalize_node_sync
+    _nd = trace_node_sync("tool_compromisso", input_data=_json.dumps({"data_prometida": data_prometida}, ensure_ascii=False))
+
     # Validação do formato da data
     try:
         target = date.fromisoformat(data_prometida)
@@ -538,7 +579,9 @@ Exemplo 5: Cliente diz "vou tentar pagar" (sem data específica)
             from infra.incidentes import registrar_incidente
             registrar_incidente(phone, "snooze_falhou", f"Supabase update falhou: {e}"[:300], {"data": data_prometida})
 
-    return f"Compromisso registrado: cobranças automáticas silenciadas até {data_prometida} ({dias} dia{'s' if dias != 1 else ''})."
+    result_msg = f"Compromisso registrado: cobranças automáticas silenciadas até {data_prometida} ({dias} dia{'s' if dias != 1 else ''})."
+    _nd["output_data"] = _json.dumps({"compromisso": data_prometida, "dias": dias, "resultado": result_msg[:200]}, ensure_ascii=False); _nd["status"] = "success"; finalize_node_sync(_nd)
+    return result_msg
 
 
 # =============================================================================

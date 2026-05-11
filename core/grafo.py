@@ -396,42 +396,78 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     from infra.nodes_supabase import buscar_historico, salvar_mensagem, salvar_mensagens_agente
     from infra.event_logger import log_event
 
+    from infra.flow_tracer import start_execution, trace_node, finish_execution
+
     redis = await get_redis_service()
 
+    # -- Flow tracer: iniciar execução --
+    import json as _json
+    texto_preview = " ".join(m.get("texto", "")[:50] for m in messages if m.get("texto"))
+    nome_ctx = context.get("nome", "") if context else ""
+    start_execution(phone, input_preview=texto_preview, nome=nome_ctx)
+
+    # 0. Node buffer_9s — mensagens acumuladas
+    async with trace_node("buffer_9s", input_data=_json.dumps({
+        "telefone": phone,
+        "mensagens_no_buffer": len(messages),
+        "nome": nome_ctx,
+    }, ensure_ascii=False)) as nd_buf:
+        buf_msgs = []
+        for m in messages:
+            entry = {}
+            if m.get("texto"):
+                entry["texto"] = m["texto"][:200]
+            if m.get("imagem_base64"):
+                entry["midia"] = "imagem"
+            if m.get("audio_base64"):
+                entry["midia"] = "audio"
+            if m.get("documento_base64"):
+                entry["midia"] = f"documento ({m.get('documento_nome', '')})"
+            buf_msgs.append(entry)
+        nd_buf["output_data"] = _json.dumps({"mensagens": buf_msgs}, ensure_ascii=False)[:1500]
+
     # 1. Verificar pausa (Redis)
-    if await redis.is_paused(phone):
+    async with trace_node("pause_check", input_data=_json.dumps({"telefone": phone}, ensure_ascii=False)) as nd:
+        paused = await redis.is_paused(phone)
+        nd["output_data"] = _json.dumps({"pausado": paused}, ensure_ascii=False)
+    if paused:
         logger.info(f"[GRAFO:{phone}] IA pausada - ignorando")
+        await finish_execution("completed", "paused")
         return
 
     # 1b. Fail-safe: verificar fila no Supabase (DB pode estar mais atualizado que Redis)
     current_queue = QUEUE_IA  # default para lead novo ou falha na query
-    try:
-        from infra.supabase import get_supabase
-        _sb = get_supabase()
-        if _sb:
-            _lead = _sb.table(TABLE_LEADS).select(
-                "current_queue_id, current_state"
-            ).eq("telefone", phone).limit(1).execute()
-            if _lead.data:
-                _queue = _lead.data[0].get("current_queue_id")
-                _state = _lead.data[0].get("current_state")
-                if _queue is not None:
-                    current_queue = int(_queue)
-                # NULL = lead novo, pode processar
-                # Fila IA (537/544/545) = pode processar
-                # state="human" ou fila humana = ignorar
-                if _state == "human":
-                    logger.info(f"[GRAFO:{phone}] Fail-safe: state=human - ignorando")
-                    await redis.pause_set(phone)
-                    return
-                if _queue is not None and int(_queue) not in IA_QUEUES:
-                    logger.info(f"[GRAFO:{phone}] Fail-safe: fila {_queue} (humana) - ignorando")
-                    await redis.pause_set(phone)
-                    return
-    except Exception as e:
-        logger.warning(f"[GRAFO:{phone}] Fail-safe check falhou: {e}")
-        from infra.incidentes import registrar_incidente
-        registrar_incidente(phone, "consulta_falhou", f"Fail-safe Supabase: {e}"[:300])
+    async with trace_node("queue_check", input_data=_json.dumps({"telefone": phone}, ensure_ascii=False)) as nd_q:
+        try:
+            from infra.supabase import get_supabase
+            _sb = get_supabase()
+            if _sb:
+                _lead = _sb.table(TABLE_LEADS).select(
+                    "current_queue_id, current_state"
+                ).eq("telefone", phone).limit(1).execute()
+                if _lead.data:
+                    _queue = _lead.data[0].get("current_queue_id")
+                    _state = _lead.data[0].get("current_state")
+                    if _queue is not None:
+                        current_queue = int(_queue)
+                    nd_q["output_data"] = _json.dumps({"fila": _queue, "estado": _state}, ensure_ascii=False)
+                    if _state == "human":
+                        logger.info(f"[GRAFO:{phone}] Fail-safe: state=human - ignorando")
+                        await redis.pause_set(phone)
+                        await finish_execution("completed", "queue_human")
+                        return
+                    if _queue is not None and int(_queue) not in IA_QUEUES:
+                        logger.info(f"[GRAFO:{phone}] Fail-safe: fila {_queue} (humana) - ignorando")
+                        await redis.pause_set(phone)
+                        await finish_execution("completed", "queue_not_ia")
+                        return
+                else:
+                    nd_q["output_data"] = "lead_novo"
+        except Exception as e:
+            logger.warning(f"[GRAFO:{phone}] Fail-safe check falhou: {e}")
+            from infra.incidentes import registrar_incidente
+            registrar_incidente(phone, "consulta_falhou", f"Fail-safe Supabase: {e}"[:300])
+            nd_q["output_data"] = f"erro: {e}"
 
     # 2. Combinar mensagens do buffer
     textos = [m.get("texto", "") for m in messages if m.get("texto")]
@@ -461,17 +497,27 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     has_media = imagem_base64 or audio_base64 or documento_base64
 
     if not texto and not has_media:
+        await finish_execution("completed", "empty_input")
         return
 
     log_event("msg_received", phone, text=texto[:100] if texto else "[media]")
 
     # 3. Buscar histórico
-    historico = buscar_historico(phone, limite=20)
+    async with trace_node("historico", input_data=_json.dumps({"telefone": phone, "limite": 20}, ensure_ascii=False)) as nd_h:
+        historico = buscar_historico(phone, limite=20)
+        # Resumo das últimas msgs do histórico
+        hist_resumo = []
+        for h in historico[-5:]:
+            content = h.content if isinstance(h.content, str) else str(h.content)
+            hist_resumo.append({"tipo": h.__class__.__name__, "conteudo": content[:150]})
+        nd_h["output_data"] = _json.dumps({"total": len(historico), "ultimas_5": hist_resumo}, ensure_ascii=False)[:1500]
 
     # 4. Transcrever áudio (se houver) antes de salvar
     audio_transcricao = None
     if audio_base64:
-        audio_transcricao = _transcrever_audio(audio_base64, audio_mimetype)
+        async with trace_node("transcricao", input_data=f"mime={audio_mimetype}") as nd_t:
+            audio_transcricao = _transcrever_audio(audio_base64, audio_mimetype)
+            nd_t["output_data"] = audio_transcricao[:200] if audio_transcricao else "falhou"
 
     # 5. Salvar mensagem do usuário (texto ou marcador de mídia)
     if texto:
@@ -488,30 +534,35 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
         salvar_mensagem(phone, media_label, "incoming")
 
     # 5. Detectar contexto (billing/manutenção) — 1x por mensagem, não por iteração
-    try:
-        from core.context_detector import detect_context, build_context_prompt
-        from infra.supabase import get_supabase
+    async with trace_node("context_detection", input_data=_json.dumps({"telefone": phone}, ensure_ascii=False)) as nd_ctx:
+        try:
+            from core.context_detector import detect_context, build_context_prompt
+            from infra.supabase import get_supabase
 
-        supabase = get_supabase()
-        if supabase:
-            ctx_result = supabase.table(TABLE_LEADS).select(
-                "conversation_history"
-            ).eq("telefone", phone).limit(1).execute()
+            supabase = get_supabase()
+            if supabase:
+                ctx_result = supabase.table(TABLE_LEADS).select(
+                    "conversation_history"
+                ).eq("telefone", phone).limit(1).execute()
 
-            if ctx_result.data:
-                history_data = ctx_result.data[0].get("conversation_history")
-                context_type, reference_id = detect_context(history_data)
-                if context_type:
-                    _context_extra[phone] = {
-                        "type": context_type,
-                        "prompt": build_context_prompt(context_type, reference_id),
-                    }
-                    logger.info(f"[GRAFO:{phone}] Contexto injetado: {context_type}")
-                    log_event("context_detected", phone, context=context_type, ref=reference_id)
-    except Exception as e:
-        logger.error(f"[GRAFO:{phone}] Erro ao detectar contexto: {e}", exc_info=True)
-        from infra.incidentes import registrar_incidente
-        registrar_incidente(phone, "contexto_falhou", str(e)[:300])
+                if ctx_result.data:
+                    history_data = ctx_result.data[0].get("conversation_history")
+                    context_type, reference_id = detect_context(history_data)
+                    if context_type:
+                        _context_extra[phone] = {
+                            "type": context_type,
+                            "prompt": build_context_prompt(context_type, reference_id),
+                        }
+                        logger.info(f"[GRAFO:{phone}] Contexto injetado: {context_type}")
+                        log_event("context_detected", phone, context=context_type, ref=reference_id)
+                        nd_ctx["output_data"] = _json.dumps({"contexto": context_type, "referencia": reference_id}, ensure_ascii=False)
+                    else:
+                        nd_ctx["output_data"] = _json.dumps({"contexto": "nenhum"}, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[GRAFO:{phone}] Erro ao detectar contexto: {e}", exc_info=True)
+            from infra.incidentes import registrar_incidente
+            registrar_incidente(phone, "contexto_falhou", str(e)[:300])
+            nd_ctx["output_data"] = f"erro: {e}"
 
     # 6. Construir mensagens LangChain
     if imagem_base64:
@@ -540,9 +591,36 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
 
     # 7. Invocar grafo com retry exponencial (phone injetado via InjectedState nas tools)
     from infra.retry import invocar_com_retry
-    result, last_error = await invocar_com_retry(
-        graph, {"messages": lang_messages, "phone": phone}, phone=phone,
-    )
+    _ai_input = {"mensagem": texto[:300] if texto else "[media]", "historico_msgs": len(lang_messages)}
+    if _context_extra.get(phone):
+        _ai_input["contexto_ativo"] = _context_extra[phone].get("type", "")
+    async with trace_node("ai_agent", input_data=_json.dumps(_ai_input, ensure_ascii=False)) as nd_ai:
+        result, last_error = await invocar_com_retry(
+            graph, {"messages": lang_messages, "phone": phone}, phone=phone,
+        )
+        if result:
+            # Extrair tools e resposta
+            tool_names = []
+            resposta_preview = ""
+            qtd_preview = len(lang_messages)
+            for m in result["messages"][qtd_preview:]:
+                if isinstance(m, AIMessage):
+                    if m.tool_calls:
+                        for tc in m.tool_calls:
+                            tool_names.append({"tool": tc["name"], "args": {k: str(v)[:100] for k, v in tc.get("args", {}).items()}})
+                    elif m.content:
+                        c = m.content if isinstance(m.content, str) else str(m.content)
+                        if c.strip():
+                            resposta_preview = c[:400]
+            _ai_out = {}
+            if tool_names:
+                _ai_out["tool_calls"] = tool_names
+            if resposta_preview:
+                _ai_out["resposta"] = resposta_preview
+            nd_ai["output_data"] = _json.dumps(_ai_out, ensure_ascii=False)[:1500]
+        else:
+            nd_ai["status"] = "error"
+            nd_ai["error_message"] = str(last_error)[:300] if last_error else "no_result"
 
     if result is None:
         _context_extra.pop(phone, None)
@@ -556,6 +634,7 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
         registrar_incidente(phone, "gemini_falhou", str(last_error)[:500] if last_error else "no_result")
         if last_error:
             _notificar_erro(phone, last_error)
+        await finish_execution("error", error_msg=str(last_error)[:300] if last_error else "no_result")
         return
 
     # 7a. Re-check pausa pós-grafo (humano pode ter assumido durante execução do LLM)
@@ -571,6 +650,7 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
             logger.info(f"[GRAFO:{phone}] Pausa detectada pós-grafo — abortando")
             log_event("paused_post_graph", phone)
             _context_extra.pop(phone, None)
+            await finish_execution("completed", "paused_post_graph")
             return
 
     # 7b. Extrair mensagens novas do agente (AIMessage + ToolMessage)
@@ -638,10 +718,10 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
         log_event("response", phone, text=resposta[:150], tokens=usage.get("total", 0))
 
     # INTERCEPTOR: bloquear tool-as-text de chegar ao cliente
-    # Se Gemini escreveu nome de tool como texto (bug conhecido do 2.0 Flash),
-    # bloquear envio e executar a ação diretamente ou transferir para humano
     from core.hallucination import detectar_tool_como_texto
-    tool_texto = detectar_tool_como_texto(resposta) if resposta else None
+    async with trace_node("guardrail", input_data=_json.dumps({"resposta_preview": resposta[:300] if resposta else ""}, ensure_ascii=False)) as nd_g:
+        tool_texto = detectar_tool_como_texto(resposta) if resposta else None
+        nd_g["output_data"] = _json.dumps({"bloqueado": tool_texto["tool"] if tool_texto else False, "status": "bloqueado" if tool_texto else "limpo"}, ensure_ascii=False)
     if tool_texto:
         logger.warning(f"[GRAFO:{phone}] TOOL-AS-TEXT interceptada: {tool_texto['tool']} — bloqueando envio")
         log_event("tool_as_text_blocked", phone, tool=tool_texto["tool"], text=resposta[:100])
@@ -676,6 +756,7 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
 
         # Limpar contexto e sair (não enviar resposta original)
         _context_extra.pop(phone, None)
+        await finish_execution("completed", "tool_as_text_intercepted")
         return
 
     # Auto-snooze 48h: se era contexto billing e Ana NÃO transferiu, silencia disparos
@@ -702,6 +783,7 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     if await redis.is_paused(phone) and not ia_transferiu:
         logger.info(f"[GRAFO:{phone}] Pausa detectada antes do envio — abortando resposta")
         log_event("paused_before_send", phone)
+        await finish_execution("completed", "paused_before_send")
         return
 
     if ia_transferiu:
@@ -715,15 +797,22 @@ async def processar_mensagens(phone: str, messages: list, context: dict = None):
     send_queue = None if ia_transferiu else current_queue
     send_user = None if ia_transferiu else USER_IA
 
-    if resposta:
-        enviar_resposta_leadbox(phone, resposta, queue_id=send_queue, user_id=send_user)
-    else:
-        from infra.incidentes import registrar_incidente
-        registrar_incidente(phone, "resposta_vazia", "Gemini retornou sem texto")
-        enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=send_queue, user_id=send_user)
+    async with trace_node("enviar_resposta", input_data=_json.dumps({"resposta": resposta[:300] if resposta else "fallback", "fila_envio": send_queue, "usuario": send_user}, ensure_ascii=False)) as nd_env:
+        if resposta:
+            enviar_resposta_leadbox(phone, resposta, queue_id=send_queue, user_id=send_user)
+            nd_env["output_data"] = _json.dumps({"status": "enviado", "canal": "leadbox"}, ensure_ascii=False)
+        else:
+            from infra.incidentes import registrar_incidente
+            registrar_incidente(phone, "resposta_vazia", "Gemini retornou sem texto")
+            enviar_resposta_leadbox(phone, FALLBACK_MSG, queue_id=send_queue, user_id=send_user)
+            nd_env["output_data"] = _json.dumps({"status": "fallback", "motivo": "resposta_vazia"}, ensure_ascii=False)
 
-    # Salvar todas as mensagens do agente APÓS filtro e envio — evita gravar no
-    # histórico respostas descartadas (ex: ".", pontuação solta) que o cliente nunca viu.
-    # Mensagens com tool_calls são sempre salvas (intermediárias do grafo).
-    if mensagens_agente:
-        salvar_mensagens_agente(phone, mensagens_agente, usage=usage or None)
+    # Salvar todas as mensagens do agente APÓS filtro e envio
+    async with trace_node("salvar_historico", input_data=_json.dumps({"mensagens_agente": len(mensagens_agente)}, ensure_ascii=False)) as nd_s:
+        if mensagens_agente:
+            salvar_mensagens_agente(phone, mensagens_agente, usage=usage or None)
+            nd_s["output_data"] = _json.dumps({"salvas": len(mensagens_agente)}, ensure_ascii=False)
+        else:
+            nd_s["output_data"] = _json.dumps({"salvas": 0, "motivo": "nenhuma msg agente"}, ensure_ascii=False)
+
+    await finish_execution("completed", output_preview=resposta[:200] if resposta else "fallback")

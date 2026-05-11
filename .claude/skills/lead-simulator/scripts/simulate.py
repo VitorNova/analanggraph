@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1292,6 +1293,159 @@ class SimulationResult:
 
 
 # =============================================================================
+# DASHBOARD INTEGRATION
+# =============================================================================
+
+TOOL_NODE_MAP = {
+    "consultar_cliente": "tool_consultar",
+    "transferir_departamento": "tool_transferir",
+    "registrar_compromisso": "tool_compromisso",
+}
+
+
+async def _flush_test_execution(result: SimulationResult, scenario: dict):
+    """Grava execução de teste no Supabase para aparecer no dashboard."""
+    try:
+        from infra.supabase import get_supabase
+
+        sb = get_supabase()
+        if not sb:
+            return
+
+        exec_id = str(uuid.uuid4())
+        now = datetime.now(MT_TZ)
+        started_at = (now - timedelta(milliseconds=result.duration_ms)).isoformat()
+        finished_at = now.isoformat()
+
+        status = "completed" if result.all_passed else "error"
+
+        exec_data = {
+            "id": exec_id,
+            "phone": LEAD["telefone"],
+            "nome": f"[TEST] {result.scenario_id}: {result.scenario_name}",
+            "trigger_type": "test",
+            "status": status,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_ms": result.duration_ms,
+            "input_preview": result.mensagem[:200],
+            "output_preview": result.resposta[:200],
+            "error_message": result.error[:500] if result.error else "",
+            "metadata": {
+                "scenario_id": result.scenario_id,
+                "context_type": result.context_type,
+                "validations_total": len(result.validations),
+                "validations_passed": sum(1 for v in result.validations if v["passed"]),
+            },
+            "created_at": now.isoformat(),
+        }
+        sb.table("ana_flow_executions").insert(exec_data).execute()
+
+        # Montar nodes a partir de raw_messages
+        nodes = []
+        order = 0
+
+        def _j(obj):
+            return json.dumps(obj, ensure_ascii=False, indent=2)[:1500]
+
+        def _node(name, inp, out, st="success", dur=0, err=""):
+            nonlocal order
+            n = {
+                "execution_id": exec_id, "node_name": name, "node_order": order,
+                "status": st, "started_at": started_at, "finished_at": finished_at,
+                "duration_ms": dur,
+                "input_data": inp if isinstance(inp, str) else _j(inp),
+                "output_data": out if isinstance(out, str) else _j(out),
+                "error_message": str(err)[:500],
+                "metadata": {}, "created_at": now.isoformat(),
+            }
+            order += 1
+            return n
+
+        # Node: context_detection
+        if result.context_type:
+            ctx_label = {"billing": "Cobranca", "manutencao": "Manutencao preventiva"}.get(result.context_type, result.context_type)
+            nodes.append(_node(
+                "context_detection",
+                inp={"cenario": result.scenario_id, "contexto_detectado": ctx_label, "tipo": result.context_type},
+                out={"acao": "Prompt de contexto injetado no system message", "tipo": result.context_type},
+            ))
+
+        # Nodes a partir das raw_messages (ai + tool)
+        for msg in result.raw_messages:
+            if msg["type"] == "ai":
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        node_name = TOOL_NODE_MAP.get(tc["name"], tc["name"])
+                        nodes.append(_node(
+                            node_name,
+                            inp={"tool": tc["name"], "argumentos": tc.get("args", {})},
+                            out={"status": "aguardando_resultado"},
+                        ))
+                elif msg.get("content"):
+                    content = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
+                    nodes.append(_node(
+                        "ai_agent",
+                        inp={
+                            "mensagem_lead": result.mensagem,
+                            "cenario": f"{result.scenario_id} — {result.scenario_name}",
+                            "contexto": result.context_type or "nenhum (organico)",
+                        },
+                        out={"resposta_ana": content[:800]},
+                        dur=result.duration_ms,
+                    ))
+            elif msg["type"] == "tool":
+                # Tool result — atualiza output do último tool node como JSON
+                tool_content = msg.get("content", "")
+                if nodes and nodes[-1]["node_name"] in TOOL_NODE_MAP.values():
+                    # Tentar parsear linhas em campos
+                    resultado = {}
+                    for line in tool_content.split("\n"):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if ":" in line and not line.startswith("-") and not line.startswith("Link"):
+                            k, _, v = line.partition(":")
+                            resultado[k.strip()] = v.strip()
+                        elif line.startswith("-") or line.startswith("Link"):
+                            resultado.setdefault("detalhes", []).append(line.lstrip("- "))
+                        else:
+                            resultado.setdefault("info", []).append(line)
+                    nodes[-1]["output_data"] = _j({"resultado": resultado}) if resultado else _j({"texto": tool_content[:500]})
+
+        # Node: guardrail (validações detalhadas)
+        passed_count = sum(1 for v in result.validations if v["passed"])
+        total_count = len(result.validations)
+        validacoes = []
+        for v in result.validations:
+            entry = {"teste": v["name"], "resultado": "PASS" if v["passed"] else "FAIL"}
+            if v.get("detail"):
+                entry["detalhe"] = v["detail"]
+            validacoes.append(entry)
+
+        failed_vals = [v["name"] for v in result.validations if not v["passed"]]
+        nodes.append(_node(
+            "guardrail",
+            inp={"total": f"{passed_count}/{total_count}", "validacoes": validacoes},
+            out={
+                "resultado": "ALL PASSED" if result.all_passed else "FAILED",
+                "tool_calls": [tc["name"] for tc in result.tool_calls] or "nenhuma",
+                "resposta_ana": result.resposta[:400],
+            },
+            st="success" if result.all_passed else "error",
+            err="; ".join(failed_vals) if failed_vals else "",
+        ))
+
+        if nodes:
+            sb.table("ana_flow_nodes").insert(nodes).execute()
+
+        logger.info(f"[{result.scenario_id}] Dashboard: exec {exec_id[:8]} gravada ({len(nodes)} nodes)")
+
+    except Exception as e:
+        logger.warning(f"[{result.scenario_id}] Dashboard flush falhou: {e}")
+
+
+# =============================================================================
 # ENGINE
 # =============================================================================
 
@@ -1416,6 +1570,13 @@ async def run_scenario(scenario_id: str, scenario: dict) -> SimulationResult:
         logger.exception(f"[{scenario_id}] Erro na simula\u00e7\u00e3o")
 
     result.passed = result.all_passed
+
+    # 9. Gravar no dashboard (fire-and-forget)
+    try:
+        await _flush_test_execution(result, scenario)
+    except Exception as e:
+        logger.warning(f"[{scenario_id}] Flush dashboard falhou: {e}")
+
     return result
 
 

@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ana Flow Dashboard</title>
+<style>
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-card: #1f2940;
+  --bg-node: #243352;
+  --border: #2a3a5c;
+  --text: #e0e0e0;
+  --text-muted: #8892a4;
+  --accent: #4fc3f7;
+  --success: #66bb6a;
+  --error: #ef5350;
+  --warning: #ffa726;
+  --skipped: #78909c;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg-primary); color: var(--text); height: 100vh; overflow: hidden; }
+
+/* Layout */
+.app { display: flex; height: 100vh; }
+.sidebar { width: 320px; background: var(--bg-secondary); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+.canvas-area { flex: 1; position: relative; overflow: hidden; }
+.detail-panel { width: 380px; background: var(--bg-secondary); border-left: 1px solid var(--border); overflow-y: auto; transform: translateX(100%); transition: transform 0.2s; flex-shrink: 0; }
+.detail-panel.open { transform: translateX(0); }
+
+/* Header */
+.header { padding: 12px 16px 0; border-bottom: 1px solid var(--border); }
+.header h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.header h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; }
+
+/* Flow tabs */
+.flow-tabs { display: flex; gap: 0; margin: 0 -16px; }
+.flow-tab {
+  flex: 1; padding: 8px 12px; text-align: center; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; color: var(--text-muted);
+  border-bottom: 2px solid transparent; transition: all 0.15s; background: none; border-top: none; border-left: none; border-right: none;
+}
+.flow-tab:hover { color: var(--text); background: var(--bg-card); }
+.flow-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Stats bar */
+.stats-bar { display: flex; gap: 2px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.stat { flex: 1; text-align: center; }
+.stat-value { font-size: 18px; font-weight: 700; }
+.stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-value.success { color: var(--success); }
+.stat-value.error { color: var(--error); }
+
+/* Filters */
+.filters { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+.filters input, .filters select {
+  flex: 1; padding: 6px 10px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); font-size: 12px; outline: none;
+}
+.filters input:focus, .filters select:focus { border-color: var(--accent); }
+
+/* Execution list */
+.exec-list { flex: 1; overflow-y: auto; }
+.exec-item {
+  padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.15s;
+}
+.exec-item:hover { background: var(--bg-card); }
+.exec-item.active { background: var(--bg-node); border-left: 3px solid var(--accent); }
+.exec-item .row { display: flex; justify-content: space-between; align-items: center; }
+.exec-item .phone { font-size: 13px; font-weight: 600; font-family: monospace; }
+.exec-item .time { font-size: 11px; color: var(--text-muted); }
+.exec-item .preview { font-size: 11px; color: var(--text-muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exec-item .badges { display: flex; gap: 6px; margin-top: 4px; }
+.badge {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; text-transform: uppercase;
+}
+.badge.completed { background: rgba(102,187,106,0.15); color: var(--success); }
+.badge.error { background: rgba(239,83,80,0.15); color: var(--error); }
+.badge.running { background: rgba(79,195,247,0.15); color: var(--accent); }
+.badge.duration { background: rgba(255,255,255,0.05); color: var(--text-muted); }
+.badge.test { background: rgba(171,71,188,0.15); color: #ab47bc; }
+
+/* Canvas */
+.canvas-container { width: 100%; height: 100%; position: relative; }
+svg.flow-canvas { width: 100%; height: 100%; }
+.flow-node {
+  cursor: pointer; transition: filter 0.15s;
+}
+.flow-node:hover { filter: brightness(1.2); }
+.flow-node rect {
+  rx: 10; ry: 10; stroke-width: 2;
+}
+.flow-node text { font-family: 'Inter', sans-serif; fill: var(--text); }
+.flow-node .node-label { font-size: 12px; font-weight: 600; }
+.flow-node .node-duration { font-size: 10px; fill: var(--text-muted); }
+.flow-node .status-dot { r: 5; }
+.edge-line { stroke: var(--border); stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+.edge-line.optional { stroke-dasharray: 6 4; }
+.edge-line.active { stroke: var(--success); stroke-width: 2.5; }
+.edge-line.error-path { stroke: var(--error); stroke-width: 2.5; }
+
+/* No execution state */
+.canvas-empty {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  text-align: center; color: var(--text-muted);
+}
+.canvas-empty .icon { font-size: 48px; margin-bottom: 12px; }
+
+/* Detail panel */
+.detail-header { padding: 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.detail-header h3 { font-size: 14px; }
+.detail-close { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 18px; }
+.detail-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.detail-section h4 { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.detail-section pre {
+  background: var(--bg-primary); padding: 10px; border-radius: 6px; font-size: 11px;
+  font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; word-break: break-all;
+  max-height: 300px; overflow-y: auto; color: var(--text); line-height: 1.5;
+}
+.detail-section pre .json-key { color: #4fc3f7; }
+.detail-section pre .json-str { color: #66bb6a; }
+.detail-section pre .json-num { color: #ffa726; }
+.detail-section pre .json-bool { color: #ce93d8; }
+.detail-section pre .json-null { color: #78909c; }
+.detail-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.detail-meta .meta-item { }
+.detail-meta .meta-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+.detail-meta .meta-value { font-size: 13px; font-weight: 600; }
+
+/* Loading */
+.loading { text-align: center; padding: 40px; color: var(--text-muted); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Mobile back button (hidden on desktop) */
+.mobile-back {
+  display: none; background: none; border: none; color: var(--accent); cursor: pointer;
+  font-size: 13px; padding: 10px 16px; border-bottom: 1px solid var(--border); text-align: left; width: 100%;
+}
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  body { overflow: auto; height: auto; }
+  .app { flex-direction: column; height: auto; min-height: 100vh; }
+  .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
+  .canvas-area { width: 100%; height: 500px; min-height: 400px; display: none; }
+  .detail-panel {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%;
+    z-index: 100; background: var(--bg-secondary); border-left: none;
+    transform: translateY(100%); transition: transform 0.25s ease-out;
+    display: block; overflow-y: auto;
+  }
+  .detail-panel.open { transform: translateY(0); }
+
+  /* Mobile view states */
+  .app.view-list .sidebar { display: flex; }
+  .app.view-list .canvas-area { display: none; }
+
+  .app.view-canvas .sidebar { display: none; }
+  .app.view-canvas .canvas-area { display: block; height: calc(100vh - 44px); }
+
+  .mobile-back { display: block; }
+
+  /* Filters stack */
+  .filters { flex-wrap: wrap; }
+  .filters input { flex: 1 1 100%; }
+  .filters select { flex: 1 1 45%; }
+
+  /* Stats smaller */
+  .stat-value { font-size: 16px; }
+
+  /* Exec list full height */
+  .exec-list { max-height: 50vh; }
+
+  /* Detail panel mobile enhancements */
+  .detail-header { padding: 16px; position: sticky; top: 0; background: var(--bg-secondary); z-index: 1; }
+  .detail-header h3 { font-size: 18px; }
+  .detail-close { font-size: 24px; padding: 4px 8px; }
+  .detail-section { padding: 16px; }
+  .detail-section h4 { font-size: 12px; margin-bottom: 10px; }
+  .detail-section pre { max-height: none; font-size: 12px; padding: 14px; }
+  .detail-meta { gap: 12px; }
+  .detail-meta .meta-value { font-size: 15px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="header">
+      <h1><span class="dot"></span> Ana Flow Dashboard</h1>
+      <div class="flow-tabs">
+        <button class="flow-tab active" data-flow="webhook" onclick="switchFlow('webhook')">Agente</button>
+        <button class="flow-tab" data-flow="billing" onclick="switchFlow('billing')">Cobranca</button>
+        <button class="flow-tab" data-flow="manutencao" onclick="switchFlow('manutencao')">Manutencao</button>
+      </div>
+    </div>
+    <div class="stats-bar" id="statsBar">
+      <div class="stat"><div class="stat-value" id="statTotal">-</div><div class="stat-label">Total 24h</div></div>
+      <div class="stat"><div class="stat-value success" id="statOk">-</div><div class="stat-label">OK</div></div>
+      <div class="stat"><div class="stat-value error" id="statErr">-</div><div class="stat-label">Erro</div></div>
+      <div class="stat"><div class="stat-value" id="statAvg">-</div><div class="stat-label">Avg ms</div></div>
+    </div>
+    <div class="filters">
+      <input type="text" id="filterPhone" placeholder="Telefone...">
+      <select id="filterStatus">
+        <option value="">Todos</option>
+        <option value="completed">OK</option>
+        <option value="error">Erro</option>
+        <option value="running">Rodando</option>
+      </select>
+      <select id="filterTrigger">
+        <option value="">Todos</option>
+        <option value="webhook">Producao</option>
+        <option value="test">Testes</option>
+      </select>
+    </div>
+    <div class="exec-list" id="execList">
+      <div class="loading">Carregando...</div>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div class="canvas-area">
+    <button class="mobile-back" onclick="mobileBack()">&larr; Voltar</button>
+    <div class="canvas-container" id="canvasContainer">
+      <div class="canvas-empty" id="canvasEmpty">
+        <div class="icon">&#9678;</div>
+        <div>Selecione uma execucao para visualizar o fluxo</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail panel -->
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-header">
+      <h3 id="detailTitle">Node</h3>
+      <button class="detail-close" onclick="closeDetail()">&times;</button>
+    </div>
+    <div class="detail-section">
+      <div class="detail-meta" id="detailMeta"></div>
+    </div>
+    <div class="detail-section">
+      <h4>Input</h4>
+      <pre id="detailInput">-</pre>
+    </div>
+    <div class="detail-section">
+      <h4>Output</h4>
+      <pre id="detailOutput">-</pre>
+    </div>
+    <div class="detail-section" id="detailErrorSection" style="display:none">
+      <h4>Erro</h4>
+      <pre id="detailError" style="color: var(--error);">-</pre>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Config ──
+const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+const API = '/api/flow';
+const REFRESH_INTERVAL = 10000;
+
+// ── State ──
+let executions = [];
+let selectedExecId = null;
+let selectedExecNodes = [];
+let flowDef = null;
+let currentFlow = 'webhook';
+
+// ── API ──
+async function api(path) {
+  const sep = path.includes('?') ? '&' : '?';
+  const res = await fetch(`${API}${path}${sep}token=${TOKEN}`);
+  if (!res.ok) {
+    if (res.status === 401) {
+      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#ef5350;font-size:18px;">Token invalido. Use ?token=XXX na URL.</div>';
+      throw new Error('Unauthorized');
+    }
+    throw new Error(`API error ${res.status}`);
+  }
+  return res.json();
+}
+
+// ── Stats ──
+async function loadStats() {
+  try {
+    const s = await api(`/stats?flow=${currentFlow}`);
+    document.getElementById('statTotal').textContent = s.total;
+    document.getElementById('statOk').textContent = s.completed;
+    document.getElementById('statErr').textContent = s.errors;
+    document.getElementById('statAvg').textContent = s.avg_duration_ms ? `${s.avg_duration_ms}` : '-';
+  } catch(e) { console.error('Stats error:', e); }
+}
+
+// ── Executions ──
+async function loadExecutions() {
+  try {
+    const phone = document.getElementById('filterPhone').value;
+    const status = document.getElementById('filterStatus').value;
+    const trigger = document.getElementById('filterTrigger').value;
+    let path = `/executions?limit=50&flow=${currentFlow}`;
+    if (phone) path += `&phone=${encodeURIComponent(phone)}`;
+    if (status) path += `&status=${encodeURIComponent(status)}`;
+    if (trigger) path += `&trigger=${encodeURIComponent(trigger)}`;
+    const data = await api(path);
+    executions = data.executions;
+    renderExecList();
+  } catch(e) { console.error('Executions error:', e); }
+}
+
+function renderExecList() {
+  const el = document.getElementById('execList');
+  if (!executions.length) {
+    el.innerHTML = '<div class="loading">Nenhuma execucao encontrada</div>';
+    return;
+  }
+  el.innerHTML = executions.map(e => {
+    const active = e.id === selectedExecId ? 'active' : '';
+    const time = formatTime(e.started_at);
+    const phone = e.phone ? `...${e.phone.slice(-8)}` : '?';
+    const preview = e.input_preview || e.nome || '';
+    return `
+      <div class="exec-item ${active}" onclick="selectExecution('${e.id}')">
+        <div class="row">
+          <span class="phone">${phone}</span>
+          <span class="time">${time}</span>
+        </div>
+        <div class="preview">${escapeHtml(preview.slice(0, 60))}</div>
+        <div class="badges">
+          ${e.trigger_type === 'test' ? '<span class="badge test">TESTE</span>' : ''}
+          <span class="badge ${e.status}">${e.status}</span>
+          ${e.duration_ms ? `<span class="badge duration">${e.duration_ms}ms</span>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ── Mobile navigation ──
+function isMobile() { return window.innerWidth <= 768; }
+
+function mobileBack() {
+  document.querySelector('.app').className = 'app view-list';
+  closeDetail();
+}
+
+// ── Select execution ──
+async function selectExecution(id) {
+  selectedExecId = id;
+  renderExecList();
+  try {
+    const data = await api(`/executions/${id}`);
+    selectedExecNodes = data.nodes;
+    renderCanvas(data.execution, data.nodes);
+    closeDetail();
+    if (isMobile()) document.querySelector('.app').className = 'app view-canvas';
+  } catch(e) { console.error('Execution detail error:', e); }
+}
+
+// ── Canvas rendering (SVG) ──
+async function loadFlowDefinition() {
+  flowDef = await api(`/definition?flow=${currentFlow}`);
+}
+
+function renderCanvas(execution, nodes) {
+  document.getElementById('canvasEmpty').style.display = 'none';
+  const container = document.getElementById('canvasContainer');
+
+  // Map node status
+  const nodeStatus = {};
+  const nodeData = {};
+  nodes.forEach(n => {
+    nodeStatus[n.node_name] = n.status;
+    nodeData[n.node_name] = n;
+  });
+
+  // SVG dimensions
+  const W = container.clientWidth;
+  const H = container.clientHeight;
+  const NODE_W = 180;
+  const NODE_H = 50;
+  const mobile = W < 500;
+
+  // Bounding box do grafo
+  const minX = Math.min(...flowDef.nodes.map(n => n.x));
+  const maxX = Math.max(...flowDef.nodes.map(n => n.x)) + NODE_W;
+  const maxY = Math.max(...flowDef.nodes.map(n => n.y)) + NODE_H;
+  const PAD = 30;
+
+  // Desktop: centralizar. Mobile: viewBox fit-all
+  const offsetX = mobile ? PAD - minX : (W - (maxX - minX + NODE_W)) / 2 - minX + NODE_W/2;
+  const offsetY = mobile ? PAD : Math.max(30, (H - maxY - 50) / 2);
+
+  const vbW = maxX - minX + PAD * 2;
+  const vbH = maxY + PAD * 2;
+  const viewBoxAttr = mobile ? `viewBox="0 0 ${vbW} ${vbH}" preserveAspectRatio="xMidYMin meet"` : '';
+
+  let svg = `<svg class="flow-canvas" xmlns="http://www.w3.org/2000/svg" ${viewBoxAttr}>
+    <defs>
+      <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#2a3a5c"/>
+      </marker>
+      <marker id="arrowhead-active" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#66bb6a"/>
+      </marker>
+    </defs>`;
+
+  // Draw edges
+  flowDef.edges.forEach(edge => {
+    const from = flowDef.nodes.find(n => n.id === edge.from);
+    const to = flowDef.nodes.find(n => n.id === edge.to);
+    if (!from || !to) return;
+
+    const x1 = from.x + offsetX + NODE_W/2;
+    const y1 = from.y + offsetY + NODE_H;
+    const x2 = to.x + offsetX + NODE_W/2;
+    const y2 = to.y + offsetY;
+
+    const fromActive = nodeStatus[from.id];
+    const toActive = nodeStatus[to.id];
+    const isActive = fromActive && toActive;
+    const isError = fromActive === 'error' || toActive === 'error';
+
+    let cls = 'edge-line';
+    if (edge.type === 'optional') cls += ' optional';
+    if (isActive && !isError) cls += ' active';
+    if (isError) cls += ' error-path';
+
+    // Curved path
+    const midY = (y1 + y2) / 2;
+    svg += `<path class="${cls}" d="M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}"
+      ${isActive ? 'marker-end="url(#arrowhead-active)"' : 'marker-end="url(#arrowhead)"'}/>`;
+  });
+
+  // Draw nodes
+  flowDef.nodes.forEach(node => {
+    const x = node.x + offsetX;
+    const y = node.y + offsetY;
+    const status = nodeStatus[node.id] || 'idle';
+    const data = nodeData[node.id];
+    const duration = data ? `${data.duration_ms}ms` : '';
+
+    let fill, stroke, dotColor;
+    switch(status) {
+      case 'success': fill = '#1b3a2a'; stroke = '#66bb6a'; dotColor = '#66bb6a'; break;
+      case 'error':   fill = '#3a1b1b'; stroke = '#ef5350'; dotColor = '#ef5350'; break;
+      case 'skipped': fill = '#2a2a2a'; stroke = '#78909c'; dotColor = '#78909c'; break;
+      case 'running': fill = '#1b2a3a'; stroke = '#4fc3f7'; dotColor = '#4fc3f7'; break;
+      default:        fill = '#243352'; stroke = '#2a3a5c'; dotColor = '#555'; break;
+    }
+
+    svg += `
+      <g class="flow-node" onclick="selectNode('${node.id}')" data-node="${node.id}">
+        <rect x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" fill="${fill}" stroke="${stroke}"/>
+        <circle class="status-dot" cx="${x + 16}" cy="${y + NODE_H/2}" fill="${dotColor}"/>
+        <text class="node-label" x="${x + 28}" y="${y + NODE_H/2 + 1}" dominant-baseline="middle">${node.label}</text>
+        ${duration ? `<text class="node-duration" x="${x + NODE_W - 8}" y="${y + NODE_H/2 + 1}" dominant-baseline="middle" text-anchor="end">${duration}</text>` : ''}
+      </g>`;
+  });
+
+  svg += '</svg>';
+  container.innerHTML = svg;
+}
+
+// ── Node detail ──
+function selectNode(nodeId) {
+  const node = selectedExecNodes.find(n => n.node_name === nodeId);
+  const def = flowDef.nodes.find(n => n.id === nodeId);
+  if (!node || !def) return;
+
+  const panel = document.getElementById('detailPanel');
+  panel.classList.add('open');
+
+  document.getElementById('detailTitle').textContent = def.label;
+  document.getElementById('detailMeta').innerHTML = `
+    <div class="meta-item"><div class="meta-label">Status</div><div class="meta-value" style="color: ${statusColor(node.status)}">${node.status.toUpperCase()}</div></div>
+    <div class="meta-item"><div class="meta-label">Duracao</div><div class="meta-value">${node.duration_ms || 0}ms</div></div>
+    <div class="meta-item"><div class="meta-label">Ordem</div><div class="meta-value">#${node.node_order}</div></div>
+    <div class="meta-item"><div class="meta-label">Horario</div><div class="meta-value">${formatTime(node.started_at)}</div></div>
+  `;
+  document.getElementById('detailInput').innerHTML = formatJson(node.input_data) || '-';
+  document.getElementById('detailOutput').innerHTML = formatJson(node.output_data) || '-';
+
+  const errSection = document.getElementById('detailErrorSection');
+  if (node.error_message) {
+    errSection.style.display = '';
+    document.getElementById('detailError').textContent = node.error_message;
+  } else {
+    errSection.style.display = 'none';
+  }
+}
+
+function closeDetail() {
+  document.getElementById('detailPanel').classList.remove('open');
+}
+
+// ── Helpers ──
+function statusColor(s) {
+  return { success: '#66bb6a', error: '#ef5350', skipped: '#78909c', running: '#4fc3f7' }[s] || '#888';
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    + ' ' + d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+}
+
+function formatJson(str) {
+  if (!str) return '';
+  try {
+    const obj = JSON.parse(str);
+    const pretty = JSON.stringify(obj, null, 2);
+    // Syntax highlight
+    return pretty.replace(/("(?:[^"\\]|\\.)*")\s*:/g, '<span class="json-key">$1</span>:')
+      .replace(/:\s*("(?:[^"\\]|\\.)*")/g, ': <span class="json-str">$1</span>')
+      .replace(/:\s*(\d+\.?\d*)/g, ': <span class="json-num">$1</span>')
+      .replace(/:\s*(true|false)/g, ': <span class="json-bool">$1</span>')
+      .replace(/:\s*(null)/g, ': <span class="json-null">$1</span>');
+  } catch { return escapeHtml(str); }
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Switch flow ──
+async function switchFlow(flow) {
+  currentFlow = flow;
+  // Update tabs UI
+  document.querySelectorAll('.flow-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.flow === flow);
+  });
+  // Reset state
+  selectedExecId = null;
+  selectedExecNodes = [];
+  document.getElementById('canvasContainer').innerHTML = `<div class="canvas-empty" id="canvasEmpty"><div class="icon">&#9678;</div><div>Selecione uma execucao para visualizar o fluxo</div></div>`;
+  closeDetail();
+  // Reload everything
+  await loadFlowDefinition();
+  await Promise.all([loadStats(), loadExecutions()]);
+  // Update trigger filter options based on flow
+  const triggerSelect = document.getElementById('filterTrigger');
+  if (flow === 'webhook') {
+    triggerSelect.innerHTML = '<option value="">Todos</option><option value="webhook">Producao</option><option value="test">Testes</option>';
+    triggerSelect.style.display = '';
+  } else {
+    triggerSelect.innerHTML = '<option value="">Todos</option>';
+    triggerSelect.style.display = 'none';
+  }
+}
+
+// ── Init ──
+async function init() {
+  await loadFlowDefinition();
+  await Promise.all([loadStats(), loadExecutions()]);
+
+  // Filters
+  document.getElementById('filterPhone').addEventListener('input', debounce(loadExecutions, 500));
+  document.getElementById('filterStatus').addEventListener('change', loadExecutions);
+  document.getElementById('filterTrigger').addEventListener('change', loadExecutions);
+
+  // Auto-refresh
+  setInterval(() => {
+    loadStats();
+    loadExecutions();
+    // Refresh selected execution if any
+    if (selectedExecId) selectExecution(selectedExecId);
+  }, REFRESH_INTERVAL);
+}
+
+function debounce(fn, ms) {
+  let timer;
+  return function(...args) { clearTimeout(timer); timer = setTimeout(() => fn.apply(this, args), ms); };
+}
+
+init();
+</script>
+</body>
+</html>
