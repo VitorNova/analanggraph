@@ -100,6 +100,23 @@ FLOW_DEFINITIONS = {
             {"from": "enviar_template",  "to": "marcar_notificado"},
         ],
     },
+    "asaas": {
+        "nodes": [
+            {"id": "webhook_asaas",      "label": "Webhook Asaas",         "x": 400, "y": 50,  "icon": "webhook"},
+            {"id": "identificar_agente", "label": "Identificar Agente",    "x": 400, "y": 150, "icon": "search"},
+            {"id": "verif_idempotencia", "label": "Verif. Idempotencia",   "x": 400, "y": 250, "icon": "shield"},
+            {"id": "processar_evento",   "label": "Processar Evento",      "x": 400, "y": 350, "icon": "robot"},
+            {"id": "atualizar_banco",    "label": "Atualizar Banco",       "x": 400, "y": 450, "icon": "save"},
+            {"id": "enviar_confirmacao", "label": "Enviar Confirmacao",    "x": 400, "y": 550, "icon": "send"},
+        ],
+        "edges": [
+            {"from": "webhook_asaas",      "to": "identificar_agente"},
+            {"from": "identificar_agente", "to": "verif_idempotencia"},
+            {"from": "verif_idempotencia", "to": "processar_evento"},
+            {"from": "processar_evento",   "to": "atualizar_banco"},
+            {"from": "atualizar_banco",    "to": "enviar_confirmacao", "type": "optional"},
+        ],
+    },
 }
 
 # Mapeamento flow → trigger_types para filtro
@@ -107,6 +124,7 @@ FLOW_TRIGGERS = {
     "webhook": ["webhook", "test"],
     "billing": ["billing_job"],
     "manutencao": ["manutencao_job"],
+    "asaas": ["asaas_webhook"],
 }
 
 
